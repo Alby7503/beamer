@@ -63,7 +63,8 @@ class PowerThrottlingTests(unittest.TestCase):
             raise Started()
 
         with mock.patch.object(kvm_bridge_win, "_claim_instance", return_value=lambda: None), \
-                mock.patch.object(kvm_bridge_win, "parse_args"), \
+                mock.patch.object(sys, "argv", ["Beamer"]), \
+                mock.patch.object(kvm_bridge_win, "prepare_windows_startup"), \
                 mock.patch.object(kvm_bridge_win, "configure_logging", return_value=None), \
                 mock.patch.object(kvm_bridge_win, "_windows_kernel32", return_value=kernel32), \
                 mock.patch.object(kvm_bridge_win, "QApplication", side_effect=window):

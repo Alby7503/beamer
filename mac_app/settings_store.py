@@ -56,7 +56,7 @@ MOVED_CROSSING = ("methods", "edge", "edge_parts", "corner", "arrangement_set_at
 ZONE_KINDS = tuple(method for method in METHODS if method != "shortcut")
 # Fields settings.json has that Config has no name for; everything else in it is Config's own.
 SETTINGS_ONLY = ("schema", "machine_id", "name", "port", "shortcut", "migrated_token_sha256", "peers", "zones", "crossing",
-                 "layout", "layout_set_at", "layout_by", "show_in_dock", "show_in_tray")
+                 "layout", "layout_set_at", "layout_by", "show_in_dock", "show_in_tray", "dismissed_update_version")
 PEER_DEFAULTS = {
     "id": "", "name": "", "platform": "", "token": "", "host": "", "port": 0, "hw": "", "send": True,
     "allow_drive": True, "in_use": True, "side": "", "side_set_at": 0, "side_by": "", "paired_with": [], "paired_at": 0,
@@ -132,6 +132,7 @@ def editable_default_config():
         reverse_scroll=False,
         appearance="system",
         ignored_inputs=[],
+        mouse_only=False,
     )
 
 
@@ -171,6 +172,7 @@ def config_to_raw(cfg):
         "reverse_scroll": cfg.reverse_scroll,
         "appearance": cfg.appearance,
         "ignored_inputs": list(cfg.ignored_inputs),
+        "mouse_only": cfg.mouse_only,
     }
 
 
@@ -882,6 +884,8 @@ class SettingsStore:
                 raise SettingsError(f"{name} must be a number from 0.25 to 4")
         if not isinstance(cfg.reverse_scroll, bool):
             raise SettingsError("reverse_scroll must be true or false")
+        if not isinstance(cfg.mouse_only, bool):
+            raise SettingsError("mouse_only must be true or false")
         try:
             ignored.validate(cfg.ignored_inputs)
         except ValueError as exc:

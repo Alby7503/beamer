@@ -30,6 +30,7 @@ from core import crossing_state
 from core import profiles
 from core import shake
 from core import effects
+from core import identify_screens
 import frame_clock
 import keyboard_layout
 import media_keys
@@ -79,7 +80,7 @@ ROUND_TRIP_MAX_AGE_SECONDS = 5.0
 # the ownership by force after one second), then goes ahead.
 LET_GO_WAIT_SECONDS = 1.3
 OWN_PLATFORM = "macos"
-CAPABILITIES = ("clipboard", "clipboard_image", "gestures", "media_keys", "text", "settings", "design_sync", "layout", "profiles", "displays", "ping_rtt")
+CAPABILITIES = ("clipboard", "clipboard_image", "gestures", "media_keys", "text", "settings", "design_sync", "layout", "profiles", "displays", "ping_rtt", "identify_screens")
 MEDIA_KEY_NAMES = frozenset({"volume_mute", "volume_down", "volume_up", "media_next", "media_prev", "media_stop", "media_play_pause", "brightness_up", "brightness_down"})
 
 # Why input came home, in words, for the alert. A why that is not here comes home quietly.
@@ -643,7 +644,7 @@ class KVMController:
         self._last_tap_event_at = self.clock()
         self._hid_unseen_since = None
         self._move_reason = None
-        self.ignore_gate = ignored.Gate(cfg.ignored_inputs)
+        self.ignore_gate = ignored.Gate(cfg.ignored_inputs, mouse_only=cfg.mouse_only)
         # Crossing: the engine is pure and runs on the event-tap thread; the
         # desktop bounds come from CoreGraphics (already in the top-left
         # global space CGEventGetLocation uses, so nothing is flipped) and are
@@ -663,6 +664,7 @@ class KVMController:
         self.notch_range = None
         self.notch_depth = 0.0
         self.on_crossing = None
+        self.on_identify_screens = None
         self._crossing_failed = False
         self._crossing_failed_at = 0.0
         self._cursor_read_error_logged = False
@@ -707,6 +709,7 @@ class KVMController:
         self._pasteboard_busy = False
         self.owner = owner_module.Owner(protocol.id_text(self.identity()["id"]), clock, resistance_px=int(self.crossing.resistance_px))
         self._clipboard_stamp = None
+        self._clipboard_written_stamp = None
         self._paired_ids = ()
         self._go_generation = 0
         self._home_notify = True
@@ -930,6 +933,38 @@ class KVMController:
             with self.book.lock:
                 return copy.deepcopy(self.book._load().get("layout", {}).get(
                     protocol.id_text(self.identity()["id"]), {}).get("displays", {}))
+
+    def identify_screens(self):
+        self.crossing_displays_changed()
+        with self.book.lock:
+            settings = copy.deepcopy(self.book._load() or {})
+        layout = ways.derive_layout(settings, gap=0)
+        if settings.get("layout_set_at", 0):
+            layout.update(settings.get("layout") or {})
+        own = protocol.id_text(self.identity()["id"])
+        self._show_identify_screens(identify_screens.display_numbers(layout.get(own)))
+        desktops = {entry.get("id") for entry in peerlist.desktops(self.book.peers())}
+        sent = set()
+        for peer, link in list(self._peers_up.items()):
+            if peer in desktops and link.live() and "identify_screens" in link.caps:
+                link.post(protocol.identify_screens_msg(identify_screens.display_numbers(layout.get(peer))))
+                sent.add(peer)
+        if self.responder is not None:
+            for ident in self.responder.links():
+                peer = protocol.id_text(ident)
+                if peer in desktops and peer not in sent and "identify_screens" in (self.responder.caps_of(ident) or ()):
+                    self.responder.send(ident, protocol.identify_screens_msg(
+                        identify_screens.display_numbers(layout.get(peer))))
+
+    def receive_identify_screens(self, peer, labels):
+        if isinstance(peer, bytes):
+            peer = protocol.id_text(peer)
+        if peer in {entry.get("id") for entry in peerlist.desktops(self.book.peers())}:
+            self._show_identify_screens(labels)
+
+    def _show_identify_screens(self, labels):
+        if self.on_identify_screens is not None:
+            self.on_identify_screens(dict(labels))
 
     def crossing_displays_changed(self):
         displays = self.crossing_display_map()
@@ -1242,7 +1277,7 @@ class KVMController:
         self.translator.modifier_down.clear()
         self.translator.printable_down.clear()
         self.translator.reset_mouse_accumulators()
-        self.ignore_gate.configure(cfg.ignored_inputs)
+        self.ignore_gate.configure(cfg.ignored_inputs, mouse_only=cfg.mouse_only)
         if self._memory is not None:
             self._memory.follow(cfg)
         self.crossing = self._crossing_engine()
@@ -1274,7 +1309,7 @@ class KVMController:
         if "shortcut" not in cfg.crossing.get("methods", ()):
             self.last_trigger_down = 0.0
             self.trigger_suppressed = False
-        self.ignore_gate.configure(cfg.ignored_inputs)
+        self.ignore_gate.configure(cfg.ignored_inputs, mouse_only=cfg.mouse_only)
         if self._memory is not None:
             self._memory.follow(cfg)
         self.crossing = self._crossing_engine()
@@ -2460,6 +2495,7 @@ class KVMController:
             if kind == protocol.MSG_SWITCH:
                 read = protocol.read_switch(message)
                 if read is not None:
+                    self._note_clipboard()
                     data = {"route": read["route"], "next": protocol.id_text(read["next"]),
                             "edge": read["edge"], "offset": read["offset"]}
                     if "taken_over_by" in read:
@@ -2468,7 +2504,8 @@ class KVMController:
             elif kind == protocol.MSG_ACCEPT:
                 read = protocol.read_accept(message)
                 if read is not None:
-                    self._step(lambda owner: owner.accept(peer, read))
+                    self._note_clipboard()
+                    self._step(lambda owner: owner.accept(peer, read) + owner.clipboard_pending())
             elif kind == protocol.MSG_REFUSE:
                 read = protocol.read_refuse(message)
                 if read is not None:
@@ -2491,6 +2528,10 @@ class KVMController:
                 data = message.get("data")
                 if isinstance(data, dict) and "settings" in link.caps and self.on_settings is not None:
                     self.on_settings(data, peer)
+            elif kind == protocol.MSG_IDENTIFY_SCREENS:
+                labels = protocol.read_identify_screens(message)
+                if labels is not None and "identify_screens" in link.caps:
+                    self.receive_identify_screens(peer, labels)
             elif kind == protocol.MSG_PAIRED:
                 ids = protocol.read_paired(message)
                 if ids is not None:
@@ -2593,15 +2634,19 @@ class KVMController:
         """Sends in the order the owner gave them, except that reading the pasteboard (which can take
         seconds, while the event tap waits for the owner's lock) is done on a thread of its own:
         what follows a clipboard read for the same peer waits for it, and everything else goes on."""
+        generation = stamp = None
+        if isinstance(action, owner_module.SendClipboard):
+            stamp = self._clipboard_stamp
+            generation = self.owner._visit_route
         with self._clip_lock:
             waiting = self._clip_wait.get(action.peer)
             if waiting is not None:
-                waiting.append(action)
+                waiting.append((action, generation, stamp) if isinstance(action, owner_module.SendClipboard) else action)
                 return
             if isinstance(action, owner_module.SendClipboard):
                 waiting = self._clip_wait[action.peer] = collections.deque()
                 try:
-                    self._on_pasteboard_locked(lambda peer=action.peer: self._clipboard_then_rest(peer, waiting))
+                    self._on_pasteboard_locked(lambda peer=action.peer: self._clipboard_then_rest(peer, waiting, generation, stamp))
                 except RuntimeError:
                     # No thread at shutdown: nothing must wait behind a read that never starts.
                     del self._clip_wait[action.peer]
@@ -2638,15 +2683,35 @@ class KVMController:
             except Exception:
                 self.logger.exception("pasteboard work failed")
 
-    def _clipboard_then_rest(self, peer, waiting):
+    def _clipboard_then_rest(self, peer, waiting, generation=None, stamp=None):
         """The clipboard for `peer`, then what `waiting` held behind it, in order. `waiting` belongs to
         the link it was made on: once that link is lost (`_forget_held`) none of it is sent, as the
         machine that reconnects will be taken afresh. A clipboard asked for again takes its turn
         among the pasteboard's other work, behind any write decided before it."""
+        sent = False
+        current_stamp = self._clipboard_stamp_now()
+        if current_stamp is not None and current_stamp == self._clipboard_written_stamp:
+            # A known peer write queued before this read may replace its original source stamp.
+            stamp = current_stamp
         try:
-            self._send_clipboard(peer, waiting)
-        except Exception:
-            self.logger.exception("the clipboard could not be sent")
+            for attempt in range(3):
+                if generation is not None and (self.owner.on != peer or self.owner._visit_route != generation):
+                    break
+                if attempt:
+                    time.sleep(0.05)
+                    if stamp is None or self._clipboard_stamp_now() != stamp:
+                        break
+                try:
+                    sent = self._send_clipboard(peer, waiting, generation, stamp)
+                except Exception:
+                    if attempt == 2:
+                        self.logger.exception("the clipboard could not be sent")
+                if sent:
+                    break
+        finally:
+            if not sent:
+                with self._owner_lock:
+                    self.owner.clipboard_failed(peer)
         while True:
             with self._clip_lock:
                 if self._clip_wait.get(peer) is not waiting:
@@ -2655,8 +2720,9 @@ class KVMController:
                     del self._clip_wait[peer]
                     return
                 action = waiting.popleft()
-                if isinstance(action, owner_module.SendClipboard):
-                    self._on_pasteboard_locked(lambda: self._clipboard_then_rest(peer, waiting))
+                if isinstance(action, tuple):
+                    action, generation, stamp = action
+                    self._on_pasteboard_locked(lambda: self._clipboard_then_rest(peer, waiting, generation, stamp))
                     return
             try:
                 self._send(action)
@@ -2851,19 +2917,27 @@ class KVMController:
         """Before this Mac takes a peer: if the clipboard changed by its owner's hand since this
         Mac last wrote it from a peer, no peer holds what it holds now."""
         stamp = self._clipboard_stamp_now()
-        if stamp != self._clipboard_stamp:
+        if stamp is not None and stamp != self._clipboard_stamp:
             self._clipboard_stamp = stamp
             with self._owner_lock:
                 self.owner.clipboard_changed()
+            return True
+        return False
 
-    def _send_clipboard(self, peer, waiting):
+    def _send_clipboard(self, peer, waiting, generation=None, stamp=None):
         """Read this Mac's clipboard and send it as a clipboard message. Text over CLIPBOARD_MAX_BYTES
         and an image protocol.png_fits refuses are each dropped on their own, so an oversized
         screenshot still lets its text through; with nothing left nothing is sent. Nothing is sent
         either when `waiting` was dropped with its link while the pasteboard was read."""
         if self._peers_up.get(peer) is None:
             return
+        if generation is not None and (self.owner.on != peer or self.owner._visit_route != generation or
+                                       (stamp is not None and self._clipboard_stamp_now() != stamp)):
+            return
         text, image = self.clipboard.get_contents()
+        if generation is not None and (self.owner.on != peer or self.owner._visit_route != generation or
+                                       (stamp is not None and self._clipboard_stamp_now() != stamp)):
+            return
         with self._clip_lock:
             if self._clip_wait.get(peer) is not waiting:
                 return
@@ -2882,15 +2956,33 @@ class KVMController:
         if not text and image is None:
             self.logger.debug("local clipboard is empty; not sending it")
             return
-        link.post(protocol.clipboard_msg(text or None, image))
+        return link.post(protocol.clipboard_msg(text or None, image))
 
     def _set_clipboard(self, message):
         read = protocol.read_clipboard(message)
         if read is None or (read["text"] is None and read["image"] is None):
             return
-        if not self.clipboard.set_contents(read["text"], read["image"]):
-            self.logger.warning("failed to set the local clipboard from an inbound message")
-        self._clipboard_stamp = self._clipboard_stamp_now()
+        started_stamp = self._clipboard_stamp_now()
+        for attempt in range(3):
+            if attempt:
+                time.sleep(0.05)
+                if started_stamp is None or self._clipboard_stamp_now() != started_stamp:
+                    break
+            try:
+                written = self.clipboard.set_contents(read["text"], read["image"])
+            except Exception:
+                written = False
+                if attempt == 2:
+                    self.logger.exception("failed to set the local clipboard from an inbound message")
+            if written:
+                stamp = getattr(self.clipboard, "write_stamp", self._clipboard_stamp_now)()
+                with self._owner_lock:
+                    self._clipboard_stamp = stamp
+                    self._clipboard_written_stamp = stamp
+                return
+        self.logger.warning("failed to set the local clipboard from an inbound message")
+        with self._owner_lock:
+            self.owner.clipboard_changed()
 
     # The outbound worker
 
@@ -2916,6 +3008,8 @@ class KVMController:
 
     def _owner_tick(self):
         self._check_tap_watchdog()
+        if self.redirecting and not self.receiving and self._note_clipboard():
+            self._step(lambda owner: owner.clipboard_pending())
         deadline = self.owner.deadline()
         if deadline is not None and self.clock() >= deadline:
             self._step(lambda owner: owner.tick())

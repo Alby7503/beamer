@@ -771,6 +771,9 @@ class ReviewTests(unittest.TestCase):
 
     def test_a_read_asked_for_again_waits_its_turn_behind_a_write_decided_before_it(self):
         rig = self.two()
+        rig.sender._note_clipboard()
+        rig.sender._owner.go(B)
+        rig.sender._owner.accept(B, {"route": rig.sender._owner.route})
         rig.clipboard.block_get = True
         rig.clipboard.block_set = True
         rig.sender._deliver(owner_module.SendClipboard(B))
@@ -946,6 +949,187 @@ class MouseTests(unittest.TestCase):
         self.assertIsNone(self.sender.round_trip_ms)
         self.sender.set_redirecting(True)
         self.assertEqual(self.sender.round_trip_ms, 7)
+
+
+class ClipboardReliabilityTests(unittest.TestCase):
+    def test_a_read_finishing_after_home_never_posts_private_local_text(self):
+        rig = Rig()
+        rig.sender.set_redirecting(True)
+        rig.accept_take()
+        rig.links.sent.clear()
+        rig.clipboard.copy("before home")
+        def copied_after_home():
+            rig.sender.set_redirecting(False)
+            rig.clipboard.copy("private local text")
+            return rig.clipboard.text, None
+        with mock.patch.object(rig.clipboard, "get_contents", side_effect=copied_after_home) as read:
+            rig.sender.tick()
+            rig.flush()
+        self.assertEqual(read.call_count, 1)
+        self.assertEqual(rig.sent(B, "clipboard"), [])
+
+    def test_a_source_retry_stops_after_home_even_if_the_stamp_is_unchanged(self):
+        rig = Rig()
+        rig.sender.set_redirecting(True)
+        rig.accept_take()
+        rig.links.sent.clear()
+        rig.clipboard.copy("before home")
+        stamp = rig.clipboard.stamp
+        def unavailable_after_home():
+            rig.sender.set_redirecting(False)
+            return None, None
+        with mock.patch.object(rig.clipboard, "get_contents", side_effect=unavailable_after_home) as read:
+            rig.sender.tick()
+            rig.flush()
+        self.assertEqual(read.call_count, 1)
+        self.assertEqual(rig.clipboard.stamp, stamp)
+        self.assertEqual(rig.sent(B, "clipboard"), [])
+
+    def test_copies_while_hidden_reach_the_active_peer(self):
+        rig = Rig()
+        rig.sender.set_redirecting(True)
+        rig.accept_take()
+        for text in ("first", "日本語 — café 𝄞", "large " * 20000):
+            rig.clipboard.copy(text)
+            rig.sender.tick()
+            self.assertEqual(rig.sent(B, "clipboard")[-1], protocol.clipboard_msg(text))
+
+    def test_a_transient_read_or_post_failure_recovers_without_another_crossing(self):
+        rig = Rig()
+        rig.sender.set_redirecting(True)
+        rig.accept_take()
+        for failure in ("read", "read_exception", "post", "post_exception"):
+            with self.subTest(failure=failure):
+                text = "new local copy: " + failure
+                rig.clipboard.copy(text)
+                read, post = rig.clipboard.get_contents, rig.links.post
+                calls = []
+                def attempt(*args):
+                    calls.append(True)
+                    if len(calls) == 1:
+                        if failure.endswith("exception"):
+                            raise OSError("clipboard temporarily busy")
+                        return (None, None) if failure == "read" else False
+                    return read() if failure.startswith("read") else post(*args)
+                target, name = (rig.clipboard, "get_contents") if failure.startswith("read") else (rig.links, "post")
+                with mock.patch.object(target, name, side_effect=attempt):
+                    rig.sender.tick()
+                    rig.flush()
+                self.assertEqual(len(calls), 2)
+                self.assertEqual(rig.sent(B, "clipboard")[-1], protocol.clipboard_msg(text))
+
+    def test_a_persistent_source_read_failure_is_bounded_and_releases_input(self):
+        rig = Rig()
+        rig.sender.set_redirecting(True)
+        rig.accept_take()
+        rig.clipboard.copy("temporarily unreadable")
+        with mock.patch.object(rig.clipboard, "get_contents", return_value=(None, None)) as read:
+            rig.sender.tick()
+            rig.sender.on_key("a", True, 0x41, "a")
+            rig.flush()
+        self.assertEqual(read.call_count, 3)
+        self.assertEqual(rig.sent(B)[-1]["type"], protocol.MSG_KEYDOWN)
+
+    def test_a_source_retry_never_reads_a_newer_copy_for_the_old_attempt(self):
+        rig = Rig()
+        rig.sender.set_redirecting(True)
+        rig.accept_take()
+        rig.clipboard.copy("first generation")
+        def changed_while_busy():
+            rig.clipboard.copy("new generation")
+            return None, None
+        with mock.patch.object(rig.clipboard, "get_contents", side_effect=changed_while_busy) as read:
+            rig.sender.tick()
+            rig.flush()
+        self.assertEqual(read.call_count, 1)
+        rig.sender.tick()
+        self.assertEqual(rig.sent(B, "clipboard")[-1], protocol.clipboard_msg("new generation"))
+
+    def test_an_inbound_write_exception_is_retried(self):
+        rig = Rig()
+        write = rig.clipboard.set_contents
+        calls = []
+        def temporarily_busy(text, image):
+            calls.append(text)
+            if len(calls) == 1:
+                raise OSError("clipboard temporarily busy")
+            return write(text, image)
+        with mock.patch.object(rig.clipboard, "set_contents", side_effect=temporarily_busy):
+            rig.sender._set_clipboard(protocol.clipboard_msg("remote copy"))
+        self.assertEqual(calls, ["remote copy", "remote copy"])
+        self.assertEqual(rig.clipboard.text, "remote copy")
+
+    def test_a_copy_completed_before_accept_is_forwarded_on_accept(self):
+        rig = Rig()
+        rig.sender.set_redirecting(True)
+        rig.flush()
+        rig.clipboard.copy("copy completed after the crossing")
+        rig.accept_take()
+        self.assertEqual(rig.sent(B, "clipboard")[-1], protocol.clipboard_msg(rig.clipboard.text))
+
+    def test_failed_reads_and_posts_are_tried_again_on_the_next_crossing(self):
+        for failure in ("read", "post"):
+            with self.subTest(failure=failure):
+                rig = Rig()
+                read, post = rig.clipboard.get_contents, rig.links.post
+                if failure == "read":
+                    rig.clipboard.get_contents = lambda: (None, None)
+                else:
+                    rig.links.post = lambda peer, message: False if message["type"] == protocol.MSG_CLIPBOARD else post(peer, message)
+                rig.sender.set_redirecting(True)
+                rig.accept_take()
+                rig.sender.set_redirecting(False)
+                rig.flush()
+                rig.clipboard.get_contents, rig.links.post = read, post
+                rig.links.sent.clear()
+                rig.sender.set_redirecting(True)
+                self.assertEqual(rig.sent(B, "clipboard"), [protocol.clipboard_msg("here")])
+
+    def test_failed_inbound_writes_do_not_swallow_a_local_copy(self):
+        rig = Rig()
+        rig.sender._note_clipboard()
+        before = rig.sender._clipboard_stamp
+        rig.clipboard.copy("local copy")
+        rig.clipboard.set_contents = lambda text, image: False
+        rig.sender._set_clipboard(protocol.clipboard_msg("remote copy"))
+        self.assertEqual(rig.sender._clipboard_stamp, before)
+
+    def test_an_inbound_write_retry_keeps_a_newer_local_copy(self):
+        rig = Rig()
+        calls = []
+        def copied_while_busy(text, image):
+            calls.append(text)
+            rig.clipboard.copy("newer local copy")
+            return False
+        rig.clipboard.set_contents = copied_while_busy
+        rig.sender._set_clipboard(protocol.clipboard_msg("remote copy"))
+        self.assertEqual(calls, ["remote copy"])
+        self.assertEqual(rig.clipboard.text, "newer local copy")
+
+    def test_a_copy_during_a_peer_write_is_not_mistaken_for_the_peer_write(self):
+        rig = Rig()
+        rig.sender._note_clipboard()
+        write_stamp = rig.clipboard.stamp + 1
+        rig.clipboard.write_stamp = lambda: write_stamp
+        write = rig.clipboard.set_contents
+        def copied_after_write(text, image):
+            result = write(text, image)
+            rig.clipboard.copy("new local copy")
+            return result
+        rig.clipboard.set_contents = copied_after_write
+        rig.sender._set_clipboard(protocol.clipboard_msg("remote copy"))
+        self.assertEqual(rig.sender._clipboard_stamp, write_stamp)
+        self.assertTrue(rig.sender._note_clipboard())
+
+    def test_source_polling_does_not_run_when_the_source_is_being_driven(self):
+        rig = Rig()
+        rig.sender.set_redirecting(True)
+        rig.accept_take()
+        rig.links.sent.clear()
+        rig.driven = True
+        rig.clipboard.copy("belongs to the machine driving this one")
+        rig.sender.tick()
+        self.assertEqual(rig.sent(B, "clipboard"), [])
 
 
 class SettingsTests(unittest.TestCase):

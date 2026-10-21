@@ -64,6 +64,9 @@ class NameTests(unittest.TestCase):
 
     def test_a_dead_key_is_composed_without_leaving_state_for_the_next_translation(self):
         class FrenchLayout:
+            def GetForegroundWindow(self):
+                return 0
+
             def __init__(self):
                 self.pending = False
                 self.flags = []
@@ -149,9 +152,11 @@ class NameTests(unittest.TestCase):
             key_up = hooks._keyboard_proc(capture_win.HC_ACTION, capture_win.WM_KEYUP, ctypes.byref(data))
 
         self.assertEqual((key_down, key_up), (1, 1))
-        on_key.assert_called_once()
-        self.assertIsInstance(on_key.call_args.args[0], capture_win.TextInput)
-        self.assertEqual(on_key.call_args.args[1:], (True, 0x41, None))
+        self.assertEqual(on_key.call_count, 2)
+        self.assertIsInstance(on_key.call_args_list[0].args[0], capture_win.TextInput)
+        self.assertEqual(on_key.call_args_list[0].args[1:], (True, 0x41, None))
+        self.assertEqual(on_key.call_args_list[1].args[0].text, "")
+        self.assertEqual(on_key.call_args_list[1].args[1:], (False, 0x41, None))
         self.assertEqual(hooks._text_keyups_swallowed, set())
 
     def test_stopping_hooks_clears_pending_text_key_releases(self):
@@ -185,9 +190,10 @@ class NameTests(unittest.TestCase):
             key_up = hooks._keyboard_proc(capture_win.HC_ACTION, capture_win.WM_KEYUP, ctypes.byref(data))
 
         self.assertEqual((repeated_down, key_up), (1, 1))
-        on_key.assert_called_once()
-        self.assertEqual(on_key.call_args.args[0].text, "a")
-        self.assertIsInstance(on_key.call_args.args[0], capture_win.TextInput)
+        self.assertEqual(on_key.call_count, 2)
+        self.assertEqual(on_key.call_args_list[0].args[0].text, "a")
+        self.assertIsInstance(on_key.call_args_list[0].args[0], capture_win.TextInput)
+        self.assertEqual(on_key.call_args_list[1].args[1:], (False, 0x41, None))
 
     def test_a_key_release_does_not_consume_a_pending_dead_key(self):
         state = KeyboardState()

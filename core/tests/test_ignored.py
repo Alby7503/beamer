@@ -6,6 +6,41 @@ from core import ignored
 
 
 class GateTests(unittest.TestCase):
+    def test_mouse_only_keeps_every_key_and_media_key_but_not_buttons(self):
+        gate = ignored.Gate(mouse_only=True)
+        for entry in ("key:0", "key:65535", "key:a", "key:text", "media:volume_up"):
+            with self.subTest(entry=entry):
+                self.assertTrue(gate.keeps(entry, True))
+                self.assertTrue(gate.keeps(entry, False))
+        for entry in ("button:left", "button:forward"):
+            self.assertFalse(gate.keeps(entry, True))
+            self.assertFalse(gate.keeps(entry, False))
+
+    def test_mouse_only_toggle_keeps_releases_with_their_presses(self):
+        gate = ignored.Gate()
+        self.assertFalse(gate.keeps("key:12", True))
+        gate.configure([], mouse_only=True)
+        self.assertFalse(gate.keeps("key:12", False))
+        self.assertTrue(gate.keeps("key:12", True))
+        gate.configure([], mouse_only=False)
+        self.assertTrue(gate.keeps("key:12", True), "local repeat stays local")
+        self.assertTrue(gate.keeps("key:12", False))
+        self.assertFalse(gate.keeps("key:12", True))
+
+    def test_mouse_only_preserves_individually_ignored_buttons(self):
+        gate = ignored.Gate(["button:back"], mouse_only=True)
+        self.assertTrue(gate.keeps("button:back", True))
+        gate.configure(["button:back"], mouse_only=False)
+        self.assertTrue(gate.keeps("button:back", False))
+
+    def test_composed_text_and_dead_key_taps_do_not_pin_their_route(self):
+        gate = ignored.Gate(mouse_only=True)
+        self.assertTrue(gate.keeps_tap("key:65"))
+        gate.configure([], mouse_only=False)
+        self.assertFalse(gate.keeps_tap("key:65"))
+        gate.configure([], mouse_only=True)
+        self.assertTrue(gate.keeps_tap("key:65"))
+
     def test_a_listed_press_and_its_release_stay_here(self):
         gate = ignored.Gate([ignored.button("back")])
         self.assertTrue(gate.keeps("button:back", True))

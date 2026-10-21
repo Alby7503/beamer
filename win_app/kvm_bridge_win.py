@@ -71,6 +71,7 @@ from edge_glow import EdgeGlow, PreviewLoop
 from frame_clock import set_divisor
 from effect_overlay import EffectOverlay, desktop_box, logical_point
 from effect_overlay_x11 import EffectOverlayX11Proxy, available as xwayland_available
+from identify_overlay import IdentifyScreens
 from effect_previews import EffectStill, SwitchStill, TileHover
 from core import idle_pointer
 from core import ignored
@@ -98,6 +99,7 @@ from core.receiver import LinkResponder, ServerState
 from core import return_edge
 from core import settings_sync
 from core import ways, crossing_state, profiles
+from core.identify_screens import display_numbers
 from sender import OWN_PLATFORM, LinkSender
 from shake_stroke import shake_stroke
 import theme
@@ -321,6 +323,7 @@ class StatusBridge(QObject):
     arrangement = Signal(str, str, int, str, object, object)
     # Either link, carrying a peer's Same on all machines state: (peer id, data).
     settings = Signal(str, object)
+    identify = Signal(object)
     shook_home = Signal(object)
     alert = Signal(str, str)
     # (version, url) when a newer Beamer is out, else None.
@@ -564,6 +567,8 @@ class WindowsApplication(QWidget):
         self.bridge.peers_changed.connect(self._on_peers_changed)
         self.bridge.arrangement.connect(self._on_arrangement)
         self.bridge.settings.connect(self._on_settings)
+        self.bridge.identify.connect(self._on_identify_screens)
+        self.identify_screens = IdentifyScreens(self)
         self.bridge.shook_home.connect(self._on_shake)
         self.bridge.update.connect(self._on_update)
         self.bridge.rules_ready.connect(self._listen)
@@ -615,6 +620,7 @@ class WindowsApplication(QWidget):
                 protocol.id_text(read["way_back_by"]) if read.get("way_back_by") else None
             ),
             settings_callback=lambda peer, data: self.bridge.settings.emit(protocol.id_text(peer), data),
+            identify_callback=lambda peer, labels: self.bridge.identify.emit(labels),
             paired_callback=self._store_paired,
             link_callback=lambda peer, up: self.bridge.peers_changed.emit(),
             announce=self._announce,
@@ -640,6 +646,7 @@ class WindowsApplication(QWidget):
             ),
             desktop=platform_parts.desktop,
             clipboard=platform_parts.clipboard,
+            mouse_only_supported=not platform_parts.WAYLAND,
         )
         self._own_display_map = {}
         app = QApplication.instance()
@@ -656,6 +663,7 @@ class WindowsApplication(QWidget):
         # Same on all machines, over either link: applied on the GUI thread, and announced with
         # this PC's own arrangement the moment a link comes up.
         self.sender.settings_callback = lambda peer, data: self.bridge.settings.emit(protocol.id_text(peer), data)
+        self.sender.identify_callback = lambda peer, labels: self.bridge.identify.emit(labels)
         self.sender.arrangement_callback = lambda peer, read: self.bridge.arrangement.emit(
             protocol.id_text(peer), read["edge"], read["set_at"], protocol.id_text(read["by"]), read.get("way_back"),
             protocol.id_text(read["way_back_by"]) if read.get("way_back_by") else None
@@ -801,7 +809,25 @@ class WindowsApplication(QWidget):
         row_layout.addWidget(widgets.rule())
 
         self.stack = QStackedWidget()
-        row_layout.addWidget(self.stack, 1)
+        pane = QWidget()
+        pane_layout = QVBoxLayout(pane)
+        pane_layout.setContentsMargins(0, 0, 0, 0)
+        pane_layout.setSpacing(0)
+        self.update_notice = widgets.Module("", heading=True)
+        self.update_notice_text = self.update_notice.eyebrow
+        actions = QHBoxLayout()
+        self.update_notes = QPushButton(tr("What's new"))
+        self.update_notes.clicked.connect(self.open_update)
+        actions.addWidget(self.update_notes)
+        self.update_dismiss = QPushButton(tr("Dismiss"))
+        self.update_dismiss.clicked.connect(self._dismiss_update)
+        actions.addWidget(self.update_dismiss)
+        actions.addStretch(1)
+        self.update_notice.body.addLayout(actions)
+        self.update_notice.hide()
+        pane_layout.addWidget(self.update_notice)
+        pane_layout.addWidget(self.stack, 1)
+        row_layout.addWidget(pane, 1)
         outer.addWidget(row, 1)
 
         footer = QFrame()
@@ -1105,11 +1131,43 @@ class WindowsApplication(QWidget):
 
     def _on_update(self, found) -> None:
         """(version, url) for a newer release, or None; on the GUI thread."""
+        if self._config is None or not self._config.check_updates:
+            found = None
         self._update = found
         self.update_button.setText(tr("Download Beamer {version}").format(version=found[0]) if found else tr("Download"))
-        motion.set_shown(self.update_button, found is not None)
+        motion.set_shown(self.update_button, found is not None and not portal.sandboxed())
         self.header_action.setText(tr("Beamer {version} is available…").format(version=found[0]) if found else tr("Beamer {version}").format(version=VERSION))
         self.header_action.setEnabled(found is not None)
+        self._refresh_update_notice()
+
+    def _refresh_update_notice(self) -> None:
+        try:
+            settings = app_config.load_settings(self.config_path)
+        except (ConfigError, OSError):
+            LOGGER.exception("Update notice settings could not be read")
+            self.update_notice.hide()
+            return
+        found = updates.visible_notice(self._update, self._config is not None and self._config.check_updates,
+                                       settings.get("dismissed_update_version", ""))
+        if found:
+            text = tr("Beamer {version} is available.").format(version=found[0])
+            if portal.sandboxed():
+                text += " " + tr("Update through your software store.")
+            self.update_notice_text.setText(text)
+        self.update_notice.setVisible(bool(found))
+
+    def _dismiss_update(self) -> None:
+        if not self._update:
+            return
+        try:
+            with app_config.SETTINGS_LOCK:
+                settings = app_config.load_settings(self.config_path)
+                settings["dismissed_update_version"] = self._update[0]
+                app_config.write_settings(self.config_path, settings)
+        except (ConfigError, OSError):
+            LOGGER.exception("Update dismissal could not be saved")
+            return
+        self._refresh_update_notice()
 
     def open_update(self) -> None:
         if self._update:
@@ -1685,6 +1743,24 @@ class WindowsApplication(QWidget):
     def _send_to(self, peer: bytes, message: dict) -> bool:
         return self.sender.send_to(peer, message) or self.server.send(peer, message)
 
+    def _identify_screens(self) -> None:
+        self._displays_changed()
+        tiles = {**self._config.layout, **ways.derive_layout(self._crossing_view_settings(), gap=0),
+                 **self.atlas_canvas.tiles}
+        self._on_identify_screens(display_numbers(tiles.get(self._config.machine_id)))
+        for peer, caps in self._peer_caps().items():
+            if "identify_screens" in caps:
+                self._send_to(peer, protocol.identify_screens_msg(display_numbers(tiles.get(protocol.id_text(peer)))))
+
+    def _on_identify_screens(self, labels) -> None:
+        self._refresh_own_displays()
+        displays = self._own_displays()
+        if displays and set(labels) != set(displays):
+            physical = {key: ({"x": rect.x, "y": rect.y, "w": rect.width, "h": rect.height}
+                              if not isinstance(rect, dict) else rect) for key, rect in displays.items()}
+            labels = display_numbers({"x": 0, "y": 0, "w": 160, "h": 100, "displays": physical})
+        self.identify_screens.show_numbers(labels, displays)
+
     def _desk_messages(self, desk: dict, caps) -> list:
         if "profiles" not in caps:
             return []
@@ -1789,7 +1865,7 @@ class WindowsApplication(QWidget):
             "platform": OWN_PLATFORM,
             "app": VERSION[:32] if VERSION.isascii() and VERSION.isprintable() else "dev",
             # A swipe has no shortcut every Linux desktop shares, so Linux does not offer gestures.
-            "caps": [cap for cap in ("clipboard", "clipboard_image", "gestures", "media_keys", "text", "settings", "design_sync", "layout", "profiles", "displays", "ping_rtt")
+            "caps": [cap for cap in ("clipboard", "clipboard_image", "gestures", "media_keys", "text", "settings", "design_sync", "layout", "profiles", "displays", "identify_screens", "ping_rtt")
                      if not (cap == "gestures" and OWN_PLATFORM == "linux")],
             "port": self._settings_port,
         }
@@ -2159,7 +2235,12 @@ class WindowsApplication(QWidget):
             line.addWidget(widgets.label(tr(text), "note", wrap=True))
             line.addSpacing(12)
         line.addStretch()
+        self.identify_button = QPushButton(tr("Identify screens"))
+        self.identify_button.setProperty("vernier", "small")
+        self.identify_button.setToolTip(tr("Show these numbers on every linked machine's screens for 3 seconds."))
+        self.identify_button.clicked.connect(self._identify_screens)
         module.body.addWidget(legend)
+        module.body.addWidget(self.identify_button, 0, Qt.AlignmentFlag.AlignRight)
         self.profile_switch_note = widgets.label(tr("Switching moves every machine to this profile's places and ways."), "note", wrap=True)
         module.body.addWidget(self.profile_switch_note)
         return module
@@ -3156,10 +3237,33 @@ class WindowsApplication(QWidget):
     # -- Keyboard -----------------------------------------------------------------------------
 
     def _keyboard_page(self, layout, current: Config) -> None:
-        # The modifier keys are set once; the stays-here list is the one people come back to.
+        module = widgets.Module(tr("Keyboard sharing"))
+        self.mouse_only_switch = widgets.Switch(tr("Mouse only"))
+        self.mouse_only_switch.setChecked(current.mouse_only)
+        self.mouse_only_switch.toggled.connect(self._mouse_only_changed)
+        module.body.addWidget(self.mouse_only_switch)
+        module.body.addWidget(widgets.label(
+            tr("Keep this machine's keyboard here. Pointer and clipboard sharing stay on."), "note", wrap=True
+        ))
+        # InputCapture owns the keyboard too, so retained keys cannot reach local Wayland apps.
+        module.setVisible(not platform_parts.WAYLAND)
+        layout.addWidget(module)
         layout.addWidget(self._modifier_module(current))
         layout.addWidget(self._ignored_module(current))
         layout.addWidget(self._speed_module(current))
+
+    def _mouse_only_changed(self, enabled: bool) -> None:
+        if self._config is None:
+            return
+        previous = self._config.mouse_only
+        self._config.mouse_only = bool(enabled)
+        if not self._persist():
+            self._config.mouse_only = previous
+            self.mouse_only_switch.blockSignals(True)
+            self.mouse_only_switch.setChecked(previous)
+            self.mouse_only_switch.blockSignals(False)
+            return
+        self.sender.update_config(self._config)
 
     def _speed_module(self, current: Config) -> QWidget:
         """How a driving machine's pointer feels on this PC: it sends what its own acceleration made of
@@ -4925,6 +5029,7 @@ class WindowsApplication(QWidget):
             slider.blockSignals(False)
             self.speed_readouts[key].setText(f"{slider.value()}%")
         for switch, value in ((self.reverse_scroll_switch, config.reverse_scroll),
+                              (self.mouse_only_switch, config.mouse_only),
                               (self.updates_switch, config.check_updates),
                               (self.hide_switch, config.hide_addresses)):
             switch.blockSignals(True)
@@ -4939,9 +5044,7 @@ class WindowsApplication(QWidget):
             self.show_window()
 
     def start(self) -> None:
-        if not sys.platform.startswith("linux"):
-            # No release has a Linux build yet, so a newer one is nothing this machine can install.
-            self.update_checker.start()
+        self.update_checker.start()
         if getattr(sys, "frozen", False) and firewall_win.is_elevated():
             # Beamer's own rules before any socket opens: a listener Windows has no rule for makes
             # it ask, and a click on Allow there writes rules for every network, public ones too,
@@ -5030,9 +5133,9 @@ class WindowsApplication(QWidget):
         switches; everything else goes to the Mac only while the Mac has
         input, and a key on the ignored list not even then."""
         if isinstance(name, TextInput):
-            return self.sender.on_text(name.text, vk)
+            return self.sender.on_text(name.text, vk, down)
         if isinstance(name, DeadKey):
-            return self.sender.on_dead_key(vk)
+            return self.sender.on_dead_key(vk, down)
         if self.sender.handle_jump_key(name, down, vk):
             return True
         if not self.sender.shortcut_armed:
@@ -5226,6 +5329,8 @@ class WindowsApplication(QWidget):
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
+        if hasattr(self, "update_notice"):
+            self._refresh_update_notice()
         if hasattr(self, "refresh_timer"):
             self._refresh_window()
         self._run_previews()
@@ -5253,6 +5358,7 @@ class WindowsApplication(QWidget):
         if self._closing:
             return
         self._closing = True
+        self.identify_screens.stop()
         self.refresh_timer.stop()
         self.update_checker.stop()
         if self.pairing is not None:
@@ -5554,6 +5660,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--config", type=Path, default=default_config_path(), help="path to settings.json")
     parser.add_argument("--hidden", action="store_true", help="start in the tray without showing the window")
     parser.add_argument("--relaunched", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--identify-x11", help=argparse.SUPPRESS)
     return parser.parse_args()
 
 
@@ -5635,6 +5742,9 @@ def prepare_windows_startup() -> None:
 
 def main() -> None:
     arguments = parse_args()
+    if arguments.identify_x11 is not None:
+        from identify_overlay import run_x11_helper
+        sys.exit(run_x11_helper(arguments.identify_x11))
     try:
         prepare_windows_startup()
     except OSError:

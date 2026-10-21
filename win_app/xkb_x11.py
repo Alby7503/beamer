@@ -43,6 +43,9 @@ def _load(names=None):
         xkb.xkb_state_new.argtypes = [p]
         xkb.xkb_state_unref.argtypes = [p]
         xkb.xkb_state_update_mask.argtypes = [p, u32, u32, u32, u32, u32, u32]
+        xkb.xkb_state_update_key.argtypes = [p, u32, ctypes.c_int]
+        xkb.xkb_state_serialize_mods.restype = u32
+        xkb.xkb_state_serialize_mods.argtypes = [p, u32]
         xkb.xkb_state_key_get_one_sym.restype = u32
         xkb.xkb_state_key_get_one_sym.argtypes = [p, u32]
         xkb.xkb_keymap_min_keycode.restype = u32
@@ -149,6 +152,15 @@ class Keymap:
 
     def empty(self, keycode: int) -> bool:
         return self._xkb.xkb_keymap_num_layouts_for_key(self._keymap, keycode) == 0
+
+    def modifier_mask(self, keycode: int) -> int:
+        """Core modifier bits depressed by this key, rather than assuming AltGr is Mod5."""
+        state = self._xkb.xkb_state_new(self._keymap)
+        try:
+            self._xkb.xkb_state_update_key(state, keycode, 1)
+            return self.core_mods(self._xkb.xkb_state_serialize_mods(state, 1))
+        finally:
+            self._xkb.xkb_state_unref(state)
 
     def text(self, keysym: int) -> Optional[str]:
         point = self._xkb.xkb_keysym_to_utf32(keysym) if keysym else 0

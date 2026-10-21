@@ -27,6 +27,7 @@ LOGGER = logging.getLogger("Beamer")
 # then and after forget_sync. A switch sends the clipboard only when the count has moved since,
 # so an unchanged screenshot is not pushed across on every switch.
 _synced_count = None
+_written_count = None
 
 # Every read and write of the contents, from whichever thread: one at a time. The change count is
 # left out, so a caller that only asks whether the pasteboard moved never waits behind a slow read.
@@ -67,7 +68,21 @@ def get_contents():
     try:
         with _LOCK:
             pasteboard = AppKit.NSPasteboard.generalPasteboard()
-            return _text_from_pasteboard(pasteboard), _png_from_pasteboard(pasteboard)
+            for _ in range(3):
+                count = pasteboard.changeCount()
+                text, png = None, None
+                try:
+                    text = _text_from_pasteboard(pasteboard)
+                except Exception:
+                    LOGGER.exception("failed to read pasteboard text")
+                try:
+                    png = _png_from_pasteboard(pasteboard)
+                except Exception:
+                    LOGGER.exception("failed to read the pasteboard image")
+                if count == pasteboard.changeCount():
+                    return text, png
+            LOGGER.warning("the pasteboard kept changing during a read")
+            return None, None
     except Exception:
         LOGGER.exception("failed to read the macOS clipboard")
         return None, None
@@ -107,18 +122,23 @@ def forget_sync():
     _synced_count = None
 
 
+def write_stamp():
+    """The peer write's count, so a later local copy remains eligible for sharing."""
+    return _written_count
+
+
 def set_contents(text, png):
     """Replace the general pasteboard with `text` and/or `png`. Returns True
     when at least one of them was set, False otherwise. Only the PNG
     representation is written for the image; every current app pastes it,
     and a TIFF alongside would double the memory for nothing. Never raises."""
-    global _synced_count
+    global _synced_count, _written_count
     if AppKit is None or (text is None and png is None):
         return False
     try:
         with _LOCK:
             pasteboard = AppKit.NSPasteboard.generalPasteboard()
-            pasteboard.clearContents()
+            count = pasteboard.clearContents()
             wrote = False
             if text is not None:
                 wrote |= bool(pasteboard.setString_forType_(text, AppKit.NSPasteboardTypeString))
@@ -126,7 +146,7 @@ def set_contents(text, png):
                 data = AppKit.NSData.dataWithBytes_length_(png, len(png))
                 wrote |= bool(pasteboard.setData_forType_(data, AppKit.NSPasteboardTypePNG))
             if wrote:
-                _synced_count = pasteboard.changeCount()
+                _synced_count = _written_count = count
         return wrote
     except Exception:
         LOGGER.exception("failed to set the macOS clipboard")

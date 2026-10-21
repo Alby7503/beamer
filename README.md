@@ -380,12 +380,12 @@ password-authenticated key exchange, from the six-digit code. What that does and
 <summary><strong>Update check</strong></summary>
 
 Once a day, and at start, Beamer asks GitHub's public releases API for the latest release of this
-repository and compares its version with its own. A new minor or major version is always offered;
-a patch release (1.5.0 to 1.5.1) only when its release notes ask for it, so a run of small fixes
-does not nag. Drafts and pre-releases never count and nothing is downloaded. When a newer one is out, the menu says Beamer X is available and Overview offers a
-Download button that opens the release page. The request is an ordinary HTTPS request, so GitHub
-sees the address it came from, as it would for a browser. Switch it off with Check for updates on
-Overview.
+repository and compares its version with its own, on the Mac, Windows and Linux. Every newer stable
+release counts; drafts and pre-releases never do, and nothing is downloaded or installed. When a newer
+one is out, the menu says Beamer X is available and the window shows a notice: What's new opens the
+release page, and Dismiss hides that version for good. The Flatpak notice says how to update through
+your software store. The request is an ordinary HTTPS request, so GitHub sees the address it came
+from, as it would for a browser. Switch it off with Check for updates on Overview.
 
 </details>
 
@@ -539,4 +539,6 @@ reply. Before a pull request, read [CONTRIBUTING.md](CONTRIBUTING.md). Report se
 A bug report is far easier to act on with each machine's log attached. Open log folder in each
 machine's menu opens it: `~/Library/Logs/Beamer/Beamer.log` on the Mac and
 `%LOCALAPPDATA%\Beamer\Beamer.log` on Windows.
+On Linux, find it at `~/.config/Beamer/Beamer.log`; Flatpak stores it at
+`~/.var/app/uk.co.kalkman.beamer/config/Beamer/Beamer.log`.
 They hold your machines' names and local network addresses, so look them over before posting.

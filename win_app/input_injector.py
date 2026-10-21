@@ -11,6 +11,7 @@ import unicodedata
 from typing import Callable, Dict, List, Optional, Set, Tuple
 
 from core.keytable import EVDEV_US
+from core import windows_tools
 
 
 LOGGER = logging.getLogger(__name__)
@@ -484,7 +485,8 @@ def inject_mouse_move(dx: int, dy: int) -> None:
 # either; a click on the PC does, and so does restarting the service, which
 # takes the window with it and leaves Windows to activate an ordinary one.
 GAMEINPUT_WINDOW_CLASS = "GameInputServiceWindow"
-GAMEINPUT_RESTART = ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", "Restart-Service GameInputSvc -Force"]
+GAMEINPUT_RESTART = ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
+                     "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Restart-Service GameInputSvc -Force"]
 # A restart that did not free the pointer must not become a restart loop.
 GAMEINPUT_RESTART_COOLDOWN_SECONDS = 60.0
 
@@ -539,10 +541,7 @@ def release_gameinput_foreground(after: Optional[Callable[[], None]] = None) -> 
                 "GameInput's service window has the foreground, where Windows refuses Beamer's input; restarting GameInputSvc to free it"
             )
             try:
-                completed = subprocess.run(
-                    GAMEINPUT_RESTART, capture_output=True, text=True, timeout=30,
-                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-                )
+                completed = windows_tools.run(GAMEINPUT_RESTART, encoding="utf-8", timeout=30)
             except (OSError, subprocess.TimeoutExpired):
                 LOGGER.exception("Could not restart GameInputSvc; a click on this PC frees the pointer")
                 return

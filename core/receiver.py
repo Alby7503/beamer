@@ -20,6 +20,7 @@ from . import peerlist
 from . import protocol
 from .i18n import tr, trc
 from .response_time import ResponseTime
+from .link_timing import LinkTiming
 
 
 LOGGER = logging.getLogger(__name__)
@@ -36,6 +37,9 @@ LOCK_CHECK_SECONDS = 0.5
 INJECTION_ERROR_STATUS_INTERVAL_SECONDS = 5.0
 SLOW_INJECTION_SECONDS = 0.25
 SLOW_INJECTION_LOG_INTERVAL_SECONDS = 1.0
+CLIPBOARD_RETRY_ATTEMPTS = 20
+CLIPBOARD_RETRY_SECONDS = 0.05
+CLIPBOARD_RETRY_WINDOW_SECONDS = 1.0
 # Windows hands the port back only when whatever holds it lets go — WinNAT's
 # dynamic reservations move on every reboot and can land on ours — so a bind
 # that fails is waited out rather than ending the listener.
@@ -120,6 +124,8 @@ IDLE_TAKEOVER_SECONDS = 3.0
 # Frames waiting to go to one peer. A peer that stops reading is closed at this, rather than let a
 # queue grow without end; it is well past anything a working link queues between two writes.
 OUTBOX_LIMIT = 512
+INBOX_LIMIT = 512
+INBOX_BYTES = protocol.MAX_FRAME_BYTES
 
 ADMITTED = "admitted"
 WRONG_ID = "wrong_id"
@@ -356,13 +362,14 @@ class PeerBook:
 
 
 class _Link:
-    """One authenticated link an initiator opened to this machine. Its reader thread deals with
-    what arrives; its writer thread sends everything that goes out, in order (the `outbox`) and
+    """One authenticated link an initiator opened to this machine. Read-ahead keeps motion current
+    while its serving thread injects; its writer sends everything that goes out (the `outbox`) and
     the `ack`s when they are due, so nothing that holds the responder's lock ever waits on a
     socket."""
 
     def __init__(self, sock, session, peer_id, key_id, host, name, caps, own_id, own_caps, allow_drive, platform="") -> None:
         self.sock = sock
+        self.timing = LinkTiming("inbound")
         self.peer_platform = platform  # the hello's: the Mac scales a PC's wheel lines by it
         self.session = session
         self.peer_id = peer_id
@@ -381,6 +388,9 @@ class _Link:
         self.closed = threading.Event()
         self.cond = threading.Condition()
         self.outbox = collections.deque()
+        self.inbox = collections.deque()
+        self.inbox_bytes = 0
+        self.read_done = False
         self.dealt = 0              # the highest seq dealt with
         self.dealt_at = 0.0
         self.pending_since = None   # when the first input not yet acknowledged was dealt with
@@ -405,13 +415,51 @@ class _Link:
         with self.cond:
             if self.closed.is_set():
                 return False
+            if message.get("type") == protocol.MSG_IDENTIFY_SCREENS and "identify_screens" not in self.caps:
+                return True
             if len(self.outbox) >= OUTBOX_LIMIT:
                 LOGGER.warning("%s stopped reading; closing its link", self.name)
                 self._close_locked()
                 return False
             self.outbox.append(message)
-            self.cond.notify()
+            self.cond.notify_all()
             return True
+
+    def receive(self, message, size: int) -> bool:
+        move = (protocol.read_input(message)
+                if isinstance(message, dict) and message.get("type") == protocol.MSG_MOUSEMOVE else None)
+        with self.cond:
+            while not self.closed.is_set():
+                if move is not None and not (move["dx"] and move["dy"]) and self.inbox:
+                    previous = protocol.read_input(self.inbox[-1][0])
+                    if (previous is not None and previous["type"] == protocol.MSG_MOUSEMOVE
+                            and move["seq"] > previous["seq"]
+                            and (previous["dx"] > 0) == (move["dx"] > 0)
+                            and (previous["dx"] < 0) == (move["dx"] < 0)
+                            and (previous["dy"] > 0) == (move["dy"] > 0)
+                            and (previous["dy"] < 0) == (move["dy"] < 0)):
+                        dx, dy = previous["dx"] + move["dx"], previous["dy"] + move["dy"]
+                        if abs(dx) <= protocol.MOVE_MAX and abs(dy) <= protocol.MOVE_MAX:
+                            # Wire motion is relative: keeping just the last delta loses travel.
+                            # Diagonal samples must retain their tangent positions and individual
+                            # corner pressure. Reversals and axis changes stay separate too.
+                            self.inbox[-1][0] = protocol.mousemove_msg(dx, dy, move["seq"])
+                            return True
+                if len(self.inbox) < INBOX_LIMIT and self.inbox_bytes + size <= INBOX_BYTES:
+                    break
+                self.cond.wait()
+            if self.closed.is_set():
+                return False
+            item = [message, size, time.monotonic(), False]
+            self.inbox.append(item)
+            self.inbox_bytes += size
+            self.cond.notify_all()
+            if move is None:
+                # Focus changes ownership. Finish every control record before reading beyond it,
+                # including the ownership check that precedes parsing a large clipboard frame.
+                while not item[3] and not self.closed.is_set():
+                    self.cond.wait()
+            return not self.closed.is_set()
 
     def dealt_with(self, seq: int) -> None:
         with self.cond:
@@ -421,7 +469,7 @@ class _Link:
             self.dealt, self.dealt_at = seq, now
             if self.pending_since is None:
                 self.pending_since = now
-            self.cond.notify()
+            self.cond.notify_all()
 
     def close(self) -> None:
         with self.cond:
@@ -465,7 +513,8 @@ class LinkResponder:
     `owner_callback(peer or None)` when ownership begins or ends, always in the order it did; `arrival_callback(edge, x, y)`
     and `pressure_callback(edge, pressure, crossed, part)` for the crossing effects;
     `arrangement_callback(peer, {edge, set_at, by})`; `settings_callback(peer, data)`, only from a
-    peer whose `caps` list `settings`; `paired_callback(peer, ids)`; `link_callback(peer, up)`; and
+    peer whose `caps` list `settings`; `identify_callback(peer, labels)` when both ends support
+    screen identification; `paired_callback(peer, ids)`; `link_callback(peer, up)`; and
     `announce(peer)`, the messages to send once a link is up (section 3, announcements).
     `status_callback(state, detail)` takes ServerState.
 
@@ -492,6 +541,7 @@ class LinkResponder:
         pressure_callback=None,
         arrangement_callback=None,
         settings_callback=None,
+        identify_callback=None,
         paired_callback=None,
         link_callback=None,
         announce=None,
@@ -510,6 +560,7 @@ class LinkResponder:
         self._callbacks = {
             "owner": owner_callback, "arrival": arrival_callback, "pressure": pressure_callback,
             "arrangement": arrangement_callback, "settings": settings_callback, "paired": paired_callback,
+            "identify": identify_callback,
             "link": link_callback,
         }
         self._announce = announce or (lambda peer: [])
@@ -849,6 +900,7 @@ class LinkResponder:
             link.sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         except OSError:
             pass
+        link.timing.connected(link.sock)
         with self._lock:
             earlier = self._links.get(link.peer_id)
             self._links[link.peer_id] = link
@@ -858,6 +910,7 @@ class LinkResponder:
             if earlier is not None:
                 earlier.close()
         writer = threading.Thread(target=self._writer, args=(link,), name="Beamer-v6-writer", daemon=True)
+        reader = threading.Thread(target=self._read_ahead, args=(link,), name="Beamer-v6-reader", daemon=True)
         try:
             self._run(after)
             writer.start()
@@ -871,36 +924,66 @@ class LinkResponder:
                     link.post(message)
             except Exception:
                 LOGGER.exception("Announcements for %s failed", link.name)
+            reader.start()
             while not link.closed.is_set():
+                with link.cond:
+                    while not link.inbox and not link.read_done and not link.closed.is_set():
+                        link.cond.wait()
+                    if link.closed.is_set() or not link.inbox:
+                        break
+                    item = link.inbox.popleft()
+                    message, size, queued_at, _done = item
+                    link.inbox_bytes -= size
+                    link.cond.notify_all()
+                dispatch_at = time.monotonic()
+                link.timing.add("receive_queue", dispatch_at - queued_at)
                 try:
-                    plain = link.session.open_raw(protocol.recv_frame(link.sock))
-                    if len(plain) > protocol.SMALL_MESSAGE_BYTES and self._owner is not link:
-                        # Only the owner's clipboard is this large; opening it was enough to keep
-                        # the counter in step, and parsing it is the peer's to make this machine pay for.
-                        LOGGER.info("Dropped a %d byte frame from %s, which does not own this machine", len(plain), link.name)
-                        continue
-                    message = protocol.parse_message(plain)
-                except socket.timeout:
-                    LOGGER.warning("%s went quiet, or took too long over one message; its link is over", link.name)
-                    break
-                except (protocol.ConnectionClosed, protocol.ProtocolError, OSError) as exc:
-                    if not link.closed.is_set():
-                        LOGGER.info("The link from %s ended: %s", link.name, exc)
-                    break
-                self._dispatch(link, message)
+                    self._dispatch(link, message)
+                finally:
+                    with link.cond:
+                        item[3] = True
+                        link.cond.notify_all()
+                    link.timing.add("dispatch", time.monotonic() - dispatch_at)
+                    link.timing.flush(ping_ms=link.response_time_ms)
         finally:
+            link.close()
             with self._lock:
                 current = self._links.get(link.peer_id) is link
                 if current:
                     del self._links[link.peer_id]
                 after = self._end_locked(link)
-            link.close()
             self._run(after)
+            if reader.ident is not None:
+                reader.join(timeout=1.0)
             if writer.ident is not None:
                 writer.join(timeout=1.0)
+            link.timing.flush(force=True, ping_ms=link.response_time_ms)
             if current:
                 self._callback("link", link.peer_id, False)
                 self._report()
+
+    def _read_ahead(self, link: _Link) -> None:
+        try:
+            while not link.closed.is_set():
+                frame = protocol.recv_frame(link.sock)
+                decode_at = time.monotonic()
+                plain = link.session.open_raw(frame)
+                if len(plain) > protocol.SMALL_MESSAGE_BYTES and self._owner is not link:
+                    LOGGER.info("Dropped a %d byte frame from %s, which does not own this machine", len(plain), link.name)
+                    continue
+                message = protocol.parse_message(plain)
+                link.timing.add("decode", time.monotonic() - decode_at)
+                if not link.receive(message, len(plain)):
+                    return
+        except socket.timeout:
+            LOGGER.warning("%s went quiet, or took too long over one message; its link is over", link.name)
+        except (protocol.ConnectionClosed, protocol.ProtocolError, OSError) as exc:
+            if not link.closed.is_set():
+                LOGGER.info("The link from %s ended: %s", link.name, exc)
+        finally:
+            with link.cond:
+                link.read_done = True
+                link.cond.notify_all()
 
     def _writer(self, link: _Link) -> None:
         """Everything this link sends, in order, and its `ack`s when they are due (section 9)."""
@@ -922,6 +1005,7 @@ class LinkResponder:
                         break
                     due = ack_due(link.last_ack_at, link.pending_since)
                     if now >= due:
+                        link.timing.add("ack_due_lag", now - due)
                         seq = link.dealt
                         held_us = int((now - link.dealt_at) * 1_000_000) if seq > link.acked else 0
                         link.acked, link.last_ack_at, link.pending_since = seq, now, None
@@ -934,7 +1018,9 @@ class LinkResponder:
                     if link.response_time_enabled:
                         due = min(due, link.next_response_probe)
                     link.cond.wait(due - now)
+                    link.timing.add("writer_wait_lag", time.monotonic() - due)
             try:
+                write_at = time.monotonic()
                 # Only this thread sends once the link is up, so sealing and sending need not be
                 # one step under the session's lock to keep the counters in order.
                 frame = memoryview(link.session.seal(message))
@@ -943,6 +1029,7 @@ class LinkResponder:
                     link.response_time.sent(message["data"]["probe"])
                 while sent < len(frame):
                     sent += link.sock.send(frame[sent:sent + SEND_CHUNK])
+                link.timing.add("write", time.monotonic() - write_at)
             except (OSError, protocol.ProtocolError, ValueError) as exc:
                 LOGGER.info("Sending to %s failed: %s", link.name, exc)
                 link.close()
@@ -967,6 +1054,10 @@ class LinkResponder:
                 parsed = protocol.read_message(message)
                 if parsed is not None and "settings" in link.caps:
                     self._callback("settings", link.peer_id, parsed[1])
+            elif kind == protocol.MSG_IDENTIFY_SCREENS:
+                labels = protocol.read_identify_screens(message)
+                if labels is not None and "identify_screens" in link.caps and "identify_screens" in link.own_caps:
+                    self._callback("identify", link.peer_id, labels)
             elif kind == protocol.MSG_PING:
                 self._on_ping(link, message)
             elif kind == protocol.MSG_PAIRED:
@@ -997,8 +1088,10 @@ class LinkResponder:
         if read["type"] == protocol.MSG_MOUSEMOVE:
             self._record_incoming_move(link, read)
         after = []
+        lock_at = time.monotonic()
         try:
             with self._lock:
+                link.timing.add("input_lock", time.monotonic() - lock_at)
                 takes = self._owner is link and self._takes(link, read)
                 if takes:
                     self._owner_input_at = time.monotonic()
@@ -1009,14 +1102,20 @@ class LinkResponder:
                     # something injected before it still goes, or that key stays down after.
                     if self._releases_held(link, read):
                         self._inject_timed_locked(link, read)
-                elif not (read["type"] == protocol.MSG_MOUSEMOVE and self._zones_locked(link, read, after)):
-                    self._inject_timed_locked(link, read)
+                else:
+                    zones_at = time.monotonic()
+                    consumed = read["type"] == protocol.MSG_MOUSEMOVE and self._zones_locked(link, read, after)
+                    link.timing.add("zones", time.monotonic() - zones_at)
+                    if not consumed:
+                        self._inject_timed_locked(link, read)
         except Exception:
             LOGGER.exception("Input from %s could not be injected", link.name)
             self._input_error_status(link)
         finally:
             link.dealt_with(read["seq"])
+        callbacks_at = time.monotonic()
         self._run(after)
+        link.timing.add("input_callbacks", time.monotonic() - callbacks_at)
 
     def _record_incoming_move(self, link: _Link, read: dict) -> None:
         now = time.monotonic()
@@ -1053,6 +1152,7 @@ class LinkResponder:
             self._inject_locked(link, read)
         finally:
             elapsed = time.monotonic() - began
+            link.timing.add("inject", elapsed)
             now = time.monotonic()
             if elapsed >= SLOW_INJECTION_SECONDS and now - link.slow_injection_at >= SLOW_INJECTION_LOG_INTERVAL_SECONDS:
                 link.slow_injection_at = now
@@ -1104,8 +1204,12 @@ class LinkResponder:
                 dx, dy = self.input_scale.move(dx, dy)
                 if not (dx or dy):
                     return
+            seam_at = time.monotonic()
             dx, dy = self._clip_to_return_seam(dx, dy)
+            link.timing.add("return_seam", time.monotonic() - seam_at)
+            inject_at = time.monotonic()
             injector.inject_mouse_move(dx, dy)
+            link.timing.add("mouse_inject", time.monotonic() - inject_at)
         elif kind in (protocol.MSG_MOUSEDOWN, protocol.MSG_MOUSEUP):
             down = kind == protocol.MSG_MOUSEDOWN
             if down:
@@ -1424,6 +1528,7 @@ class LinkResponder:
         `refuse`. Returns what is left to do without the lock."""
         if link is None or self._owner is not link:
             return []
+        stamp = self._clipboard_stamp() if let_go else None
         self._owner = None
         self._owner_input_at = None
         self._reach = frozenset()
@@ -1436,7 +1541,7 @@ class LinkResponder:
         after = []
         if let_go:
             visit = self._visit
-            after.append(lambda: self._clipboard_later(lambda: self._clipboard_back(link, visit)))
+            after.append(lambda: self._clipboard_later(lambda: self._clipboard_back(link, visit, stamp)))
         elif why is not None and not link.closed.is_set():
             link.post(protocol.refuse_msg(link.route, why))
         return after
@@ -1532,11 +1637,13 @@ class LinkResponder:
             if self._owner is not link:
                 return
             visit = self._visit
-        self._clipboard_later(lambda: self._set_clipboard(link, visit, text, image))
+        self._clipboard_later(lambda: self._set_clipboard(link, visit, text, image), (id(link), visit))
 
-    def _clipboard_later(self, job) -> None:
+    def _clipboard_later(self, job, write=None) -> None:
         with self._clipboard_jobs_lock:
-            self._clipboard_jobs.append(job)
+            if write is not None and self._clipboard_jobs and self._clipboard_jobs[-1][1] == write:
+                self._clipboard_jobs.pop()
+            self._clipboard_jobs.append((job, write))
             if self._clipboard_running:
                 return
             self._clipboard_running = True
@@ -1553,7 +1660,7 @@ class LinkResponder:
                 if not self._clipboard_jobs:
                     self._clipboard_running = False
                     return
-                job = self._clipboard_jobs.popleft()
+                job, _ = self._clipboard_jobs.popleft()
             try:
                 job()
             except Exception:
@@ -1562,18 +1669,34 @@ class LinkResponder:
     def _set_clipboard(self, link: _Link, visit: int, text, image) -> None:
         """A write begins only while its sender still owns this machine in the visit it was sent in;
         one already in flight when the ownership ends is not taken back, as it cannot be."""
-        with self._lock:
-            if self._owner is not link or self._visit != visit:
+        initial_stamp = self._clipboard_stamp()
+        clipboard = self._clipboard_module()
+        deadline = time.monotonic() + CLIPBOARD_RETRY_WINDOW_SECONDS
+        for attempt in range(CLIPBOARD_RETRY_ATTEMPTS):
+            if attempt and time.monotonic() >= deadline:
+                break
+            with self._lock:
+                if self._owner is not link or self._visit != visit or link.closed.is_set():
+                    return
+            if attempt and (initial_stamp is None or self._clipboard_stamp() != initial_stamp):
                 return
-        try:
-            if not self._clipboard_module().set_contents(text, image):
-                LOGGER.warning("Could not set the clipboard %s sent", link.name)
-        except Exception:
-            LOGGER.exception("Could not set the clipboard %s sent", link.name)
-        stamp = self._clipboard_stamp()
-        with self._lock:
-            if self._visit == visit:
-                self._clipboard_mark = stamp
+            try:
+                written = clipboard.set_contents(text, image)
+            except Exception:
+                written = False
+                if attempt == CLIPBOARD_RETRY_ATTEMPTS - 1:
+                    LOGGER.exception("Could not set the clipboard %s sent", link.name)
+            if written:
+                # The adapter's own write stamp must not absorb a local copy made just after it.
+                write_stamp = getattr(clipboard, "write_stamp", None)
+                stamp = write_stamp() if write_stamp is not None else self._clipboard_stamp()
+                with self._lock:
+                    if self._visit == visit:
+                        self._clipboard_mark = stamp
+                return
+            if attempt < CLIPBOARD_RETRY_ATTEMPTS - 1:
+                time.sleep(CLIPBOARD_RETRY_SECONDS)
+        LOGGER.warning("Could not set the clipboard %s sent", link.name)
 
     def _clipboard_stamp(self):
         stamp = getattr(self._clipboard_module(), "change_stamp", None)
@@ -1585,24 +1708,43 @@ class LinkResponder:
             LOGGER.exception("Could not read the clipboard's change stamp")
             return None
 
-    def _clipboard_back(self, link: _Link, visit: int) -> None:
+    def _clipboard_back(self, link: _Link, visit: int, stamp) -> None:
         """A let-go owner gets this machine's clipboard only when something other than its own
         `clipboard` messages changed it during the visit, so an idle machine gives nothing away;
         and never once another ownership has begun or the clipboard changed while it was read, so
-        what it gets is never the next owner's. Nor when the clipboard could not be read as the
-        visit began (a Wayland session not up yet): what changed during it cannot be told. The mark
-        is read here, after any write the owner had queued has updated it."""
+        what it gets is never the next owner's or a copy made after letting go. Nor when the
+        clipboard stamp could not be read as the visit began or ended (a Wayland session not up
+        yet): what changed during it cannot be told. The mark is read here, after any write the
+        owner had queued has updated it."""
         with self._lock:
             if self._visit != visit:
                 return
             mark = self._clipboard_mark
-        stamp = self._clipboard_stamp()
         if stamp is None or mark is None or stamp == mark:
             return
-        try:
-            text, image = self._clipboard_module().get_contents()
-        except Exception:
-            LOGGER.exception("Could not read the clipboard for %s", link.name)
+        deadline = time.monotonic() + CLIPBOARD_RETRY_WINDOW_SECONDS
+        for attempt in range(CLIPBOARD_RETRY_ATTEMPTS):
+            if attempt and time.monotonic() >= deadline:
+                LOGGER.warning("Could not read the clipboard for %s", link.name)
+                return
+            with self._lock:
+                if self._visit != visit or self._owner is not None or link.closed.is_set():
+                    return
+            # A retry belongs to the same copy, never a local copy made after letting go.
+            if self._clipboard_stamp() != stamp:
+                return
+            try:
+                text, image = self._clipboard_module().get_contents()
+            except Exception:
+                text, image = None, None
+                if attempt == CLIPBOARD_RETRY_ATTEMPTS - 1:
+                    LOGGER.exception("Could not read the clipboard for %s", link.name)
+            if text is not None or image is not None:
+                break
+            if attempt < CLIPBOARD_RETRY_ATTEMPTS - 1:
+                time.sleep(CLIPBOARD_RETRY_SECONDS)
+        else:
+            LOGGER.warning("Could not read the clipboard for %s", link.name)
             return
         if "clipboard" not in link.caps or not text or len(text.encode("utf-8", "replace")) > protocol.CLIPBOARD_MAX_BYTES:
             text = None

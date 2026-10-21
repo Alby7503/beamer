@@ -1322,6 +1322,22 @@ report can be read from the log.
 
 ## 10. Text and shared settings
 
+**`identify_screens`** briefly labels the recipient's physical displays with the numbers shown
+on the sender's Crossing map. Both ends advertise the optional `identify_screens` capability;
+older peers receive no request. Wire version 6 is unchanged.
+
+```json
+{"type":"identify_screens","data":{"displays":{"0":2,"1":1}}}
+```
+
+`displays` contains one to sixteen syntactically valid display keys with unique integer labels
+from 1 to 16. Structurally invalid requests are ignored. If the supplied key set differs from
+the recipient's current display keys, the recipient replaces the supplied labels with numbers
+for all its current displays. Labels use each machine's top-to-bottom, left-to-right map order.
+The receiver shows click-through, non-activating overlays for three seconds, without changing
+input ownership, saving settings or relaying the request. This is a control message, without
+an input sequence number or acknowledgement.
+
 **`text`** is a string the receiver types as it stands, for a phone's keyboard, where naming each
 key would lose accents and emoji. The receiver advertises `text` only if it can type any Unicode
 text.

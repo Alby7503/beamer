@@ -255,6 +255,19 @@ class SettingsLayoutAcceptance(unittest.TestCase):
                         self.assertTrue(self.paints_on_one_line(button), "the label wraps or clips inside its button")
                         self.assertGreaterEqual(button.height(), 24 if button.property("ledger_quiet") else 30)
 
+    def test_identify_screens_keeps_its_label_and_stays_inside_the_narrow_page(self):
+        for width in (320, 426, 640):
+            with self.subTest(width=width):
+                self.set_size(width)
+                scroll = self.page_scroll("crossing")
+                button = self.window.identify_button
+                self.assertTrue(button.isVisibleTo(scroll.widget()))
+                self.assertTrue(self.paints_on_one_line(button))
+                self.assertGreaterEqual(button.width(), button.sizeHint().width())
+                rectangle = QRect(button.mapTo(scroll.viewport(), QPoint()), button.size())
+                self.assertGreaterEqual(rectangle.left(), 0)
+                self.assertLessEqual(rectangle.right(), scroll.viewport().width())
+
     def test_send_destination_refits_when_the_column_shrinks_and_grows(self):
         full_text = "Send input to Synthetic workstation with a long machine name"
         with mock.patch.object(self.window, "_redirect_text", return_value=full_text):

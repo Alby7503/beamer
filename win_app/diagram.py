@@ -15,6 +15,7 @@ import pages_win
 import theme
 import tokens
 from core import ways
+from core.identify_screens import display_numbers
 from core.resistance_strip import MAX_RESISTANCE, resistance_x
 
 OTHER = N_("Other machine")
@@ -893,7 +894,11 @@ class AtlasCanvas(QWidget):
 
     @staticmethod
     def _title_top(rect):
-        return rect.top()+7 if rect.height() >= 56 else rect.center().y()-11
+        if rect.height() < 32:
+            return rect.top() + 11
+        if rect.height() < 44:
+            return rect.top() + max(12, rect.height() - 21)
+        return rect.top() + (4 if rect.height() < 56 else 7)
 
     def _shows_cycle(self, peer):
         return (not self.remote and not self.read_only and self.cycle_mode == "ticked"
@@ -903,11 +908,14 @@ class AtlasCanvas(QWidget):
     def _cycle_box(rect):
         """The shortcut-cycle tick: its own column at the right end of the name's line, or in the
         bottom row of a tile 44 to 56pt tall, leaving its corner free for the resize grip."""
+        if rect.height() < 32:
+            return QRectF(rect.right() - 15, rect.top() + 1, 10, 10)
         if 44 <= rect.height() < 56:
             return QRectF(rect.right() - RESIZE_GRIP - 4 - CYCLE_BOX,
                           rect.bottom() - 4 - CYCLE_BOX, CYCLE_BOX, CYCLE_BOX)
         margin = RESIZE_GRIP + 4 if rect.height() < 44 else 8
-        return QRectF(rect.right() - margin - CYCLE_BOX, AtlasCanvas._title_top(rect) + 11 - CYCLE_BOX/2,
+        title_half = 10 if rect.height() < 56 else 11
+        return QRectF(rect.right() - margin - CYCLE_BOX, AtlasCanvas._title_top(rect) + title_half - CYCLE_BOX/2,
                       CYCLE_BOX, CYCLE_BOX)
 
     @staticmethod
@@ -915,11 +923,18 @@ class AtlasCanvas(QWidget):
         return AtlasCanvas._cycle_box(rect).adjusted(-4, -4, 4, 4)
 
     def _title_rect(self, peer, rect):
+        return self._beside_display_numbers(self._title_without_numbers(peer, rect),
+                                            [box for _, _, box in self._display_number_boxes(peer, rect)])
+
+    def _title_without_numbers(self, peer, rect):
         """The name's text rect. Beside the shortcut-cycle tick the name stays centred on the tile while
         it fits the room left symmetric by the tick, else takes the room left of the tick; a tile 44 to
         56pt tall puts the name on its own row above the tick, 20pt tall so a 44pt tile still fits both."""
+        if rect.height() < 32:
+            return QRectF(rect.left() + 5, rect.top() + 11, max(1, rect.width() - 10), max(1, rect.height() - 12))
         if not self._shows_cycle(peer):
-            return QRectF(rect.left()+8, self._title_top(rect), max(1, rect.width()-16), 22)
+            return QRectF(rect.left()+8, self._title_top(rect), max(1, rect.width()-16),
+                          20 if rect.height() < 56 else 22)
         if 44 <= rect.height() < 56:
             return QRectF(rect.left()+8, rect.top()+4, max(1, rect.width()-16), 20)
         room = 8 + CYCLE_BOX + 6
@@ -927,10 +942,40 @@ class AtlasCanvas(QWidget):
         if (rect.height() >= 56 and QFontMetrics(theme.font(tokens.TYPE["body"], 650)).horizontalAdvance(label)
                 <= rect.width() - 2*room):
             return QRectF(rect.left()+room, self._title_top(rect), rect.width()-2*room, 22)
-        return QRectF(rect.left()+8, self._title_top(rect), max(1, self._cycle_box(rect).left()-6-rect.left()-8), 22)
+        return QRectF(rect.left()+8, self._title_top(rect), max(1, self._cycle_box(rect).left()-6-rect.left()-8),
+                      20 if rect.height() < 56 else 22)
+
+    def _display_number_boxes(self, peer, rect):
+        tile = self.tiles[peer]
+        boxes = []
+        for display, number in display_numbers(tile).items():
+            frame = self.display_rect(peer, display) if tile.get("displays") else rect
+            if rect.height() < 32:
+                box = QRectF(frame.left() + 5, frame.top() + 1, 12, 8)
+            elif rect.height() < 44:
+                box = QRectF(frame.left() + 5, frame.top() + 1, 14, 10)
+            elif rect.height() < 56:
+                box = QRectF(frame.left() + 5, frame.bottom() - 15, 16, 14)
+            else:
+                box = QRectF(frame.left() + 5, frame.bottom() - 21, 18, 16)
+            boxes.append((display, number, box))
+        return boxes
+
+    @staticmethod
+    def _beside_display_numbers(row, badges):
+        spans = [(row.left(), row.right())]
+        for badge in badges:
+            if badge.bottom() < row.top() or badge.top() > row.bottom():
+                continue
+            spans = [(a, b) for left, right in spans
+                     for a, b in ((left, min(right, badge.left() - 4)),
+                                  (max(left, badge.right() + 4), right)) if b > a]
+        left, right = max(spans, key=lambda span: span[1] - span[0], default=(row.left(), row.left()))
+        return QRectF(left, row.top(), max(0, right - left), row.height())
 
     def paintEvent(self, _event):
         self._geometry()
+        self.display_number_rects = []
         self.seam_paths = []
         self.wrap_marks = []
         self.wrap_label_rects = []
@@ -968,6 +1013,8 @@ class AtlasCanvas(QWidget):
             painter.setBrush(_colour(fill))
             painter.drawRoundedRect(rect, tokens.RADIUS["button"], tokens.RADIUS["button"])
             displays = tile.get("displays") or {}
+            number_boxes = self._display_number_boxes(peer, rect)
+            badge_rects = [box for _, _, box in number_boxes]
             if isinstance(displays, dict) and len(displays) > 1:
                 for screen in ways._display_frames(tile):
                     screen_rect = self.display_rect(peer, screen["display"]).adjusted(2, 2, -2, -2)
@@ -989,7 +1036,7 @@ class AtlasCanvas(QWidget):
             sentence_keys = state_data.get("sentence_keys", [])
             legacy = state_data.get("legacy", False)
             painter.setPen(_colour("ink"))
-            painter.setFont(theme.font(tokens.TYPE["body"], 650))
+            painter.setFont(theme.font(10 if rect.height() < 32 else tokens.TYPE["body"], 650))
             title = self.labels.get(peer, f"Machine · {peer[-6:]}")
             title_room = self._title_rect(peer, rect)
             painter.drawText(title_room, Qt.AlignmentFlag.AlignCenter,
@@ -999,10 +1046,12 @@ class AtlasCanvas(QWidget):
             if detail and rect.height() >= 56:
                 painter.setPen(_colour("ink_2"))
                 painter.setFont(theme.font(tokens.TYPE["note"]))
-                painter.drawText(QRectF(rect.left()+24, rect.top()+31, max(1, rect.width()-32), 16),
+                detail_room = self._beside_display_numbers(
+                    QRectF(rect.left()+24, rect.top()+31, max(1, rect.width()-32), 16), badge_rects)
+                painter.drawText(detail_room,
                                  Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignLeft,
                                  painter.fontMetrics().elidedText(detail, Qt.TextElideMode.ElideRight,
-                                                                 max(1, round(rect.width()-32))))
+                                                                 max(1, round(detail_room.width()))))
             if legacy and rect.height() >= 78:
                 painter.setPen(_colour("amber"))
                 painter.setFont(theme.font(tokens.TYPE["note"]))
@@ -1024,8 +1073,19 @@ class AtlasCanvas(QWidget):
                 painter.setPen(_colour("signal" if foot == "Crosses" else "amber" if foot in
                                        ("Drag to connect", "Overlaps") else "ink_3"))
                 painter.setFont(theme.font(tokens.TYPE["note"]))
-                painter.drawText(QRectF(rect.left()+7, rect.bottom()-24, max(1, rect.width()-14), 16),
-                                 Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignHCenter, foot)
+                footer_room = self._beside_display_numbers(
+                    QRectF(rect.left()+7, rect.bottom()-24, max(1, rect.width()-14), 16), badge_rects)
+                painter.drawText(footer_room, Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignHCenter,
+                                 painter.fontMetrics().elidedText(foot, Qt.TextElideMode.ElideRight,
+                                                                 max(1, round(footer_room.width()))))
+            for display, number, number_box in number_boxes:
+                self.display_number_rects.append((peer, display, number, number_box))
+                painter.setPen(QPen(_colour("edge"), 1.0))
+                painter.setBrush(_colour("ground"))
+                painter.drawRoundedRect(number_box, 3, 3)
+                painter.setFont(theme.mono_font(7 if rect.height() < 32 else 8 if rect.height() < 44 else 10, 700))
+                painter.setPen(_colour("ink"))
+                painter.drawText(number_box, Qt.AlignmentFlag.AlignCenter, str(number))
             if self._shows_cycle(peer):
                 box = self._cycle_box(rect)
                 ticked = bool(self.cycle.get(peer, True))
@@ -1038,9 +1098,10 @@ class AtlasCanvas(QWidget):
                     pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
                     painter.setPen(pen)
                     painter.setBrush(Qt.BrushStyle.NoBrush)
-                    check = QPainterPath(QPointF(box.left()+4.5, box.top()+8.5))
-                    check.lineTo(box.left()+7, box.top()+11)
-                    check.lineTo(box.left()+11.5, box.top()+5)
+                    tick_scale = box.width() / CYCLE_BOX
+                    check = QPainterPath(QPointF(box.left()+4.5*tick_scale, box.top()+8.5*tick_scale))
+                    check.lineTo(box.left()+7*tick_scale, box.top()+11*tick_scale)
+                    check.lineTo(box.left()+11.5*tick_scale, box.top()+5*tick_scale)
                     painter.drawPath(check)
             painter.setOpacity(1.0)
         own_id = self._own_id()

@@ -83,6 +83,18 @@ class Acks(Case):
 
 
 class Liveness(Case):
+    def test_fast_overlapping_typing_arrives_in_order_without_missing_keys(self):
+        link = self.owner()
+        expected = []
+        for _ in range(100):
+            for name, down in (("shift", True), ("a", True), ("b", True), ("a", False),
+                               ("b", False), ("shift", False), ("o", True), ("o", True),
+                               ("o", False), ("o", True), ("o", False)):
+                seq = link.key("keydown" if down else "keyup", name)
+                expected.append(("key", name, down))
+        self.assertIsNotNone(link.acked(seq))
+        self.assertEqual(self.machine.injected(), expected)
+
     def test_a_large_frame_arriving_slowly_keeps_the_link(self):
         with mock.patch.object(receiver, "LINK_READ_TIMEOUT_SECONDS", 0.5):
             link = self.owner()

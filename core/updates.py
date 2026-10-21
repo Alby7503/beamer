@@ -39,16 +39,11 @@ def parse_version(text):
     return parsed[0] if parsed else None
 
 
-# In a release's notes, where GitHub renders nothing, it offers a patch release as an update too.
-ANNOUNCE = "<!-- announce -->"
-
-
 def newer_release(current, payload):
     """(version text, page url) when `payload`, the API's JSON, names a release worth offering over
-    `current`, else None. A new minor or major version always is; a patch release (1.4.0 to 1.4.1)
-    only when its notes carry ANNOUNCE, so frequent small releases do not nag. Drafts and
+    `current`, else None. Every newer stable version counts, including patch releases. Drafts and
     prereleases never count, nor does a tag that names a beta. A beta install is offered its own
-    release (1.5.0-beta.1 to 1.5.0) and anything newer without the announce, never an older one."""
+    release (1.5.0-beta.1 to 1.5.0) and anything newer, never an older one."""
     if not isinstance(payload, dict) or payload.get("draft") or payload.get("prerelease"):
         return None
     tag = payload.get("tag_name")
@@ -58,13 +53,15 @@ def newer_release(current, payload):
     theirs, (ours, beta) = theirs[0], ours
     if theirs < ours or (theirs == ours and not beta):
         return None
-    body = payload.get("body")
-    if not beta and theirs[:2] == ours[:2] and not (isinstance(body, str) and ANNOUNCE in body):
-        return None
     url = payload.get("html_url")
     if not isinstance(url, str) or not url.startswith("https://github.com/kalkman-code/beamer/"):
         url = RELEASES_PAGE
     return (str(tag).lstrip("v"), url)
+
+
+def visible_notice(found, enabled, dismissed):
+    """Dismissal is local to one version; the off setting also hides cached answers."""
+    return found if enabled and found and found[0] != dismissed else None
 
 
 def fetch(url=LATEST_URL):
@@ -129,6 +126,8 @@ class Checker:
             self._failed = True
             return
         self._failed = False
+        if not self.enabled() or self._stop.is_set():
+            return
         self.latest = newer_release(self.current, payload)
         if self.latest:
             self.logger.info("Beamer %s is available", self.latest[0])

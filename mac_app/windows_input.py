@@ -71,6 +71,7 @@ class WindowsInput:
             arrangement_callback=self._on_arrangement,
             settings_callback=self._on_settings,
             paired_callback=self._on_paired,
+            identify_callback=controller.receive_identify_screens,
             link_callback=self._on_link,
             announce=self._announce,
         )

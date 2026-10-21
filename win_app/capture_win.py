@@ -29,9 +29,9 @@ callback thread:
   moving -- read as this PC's own push against the same edge and sent this
   PC's input straight out to the Mac, which left the Mac's own notch and
   shortcut dead until someone pressed Send input to Windows.
-- The character a key produces is read with only shift and caps lock applied,
-  never Ctrl/Alt/Win, exactly as the Mac's translator does it, so a chord
-  arrives as a modifier plus the plain key rather than as a control character.
+- Shortcuts use the plain key with Shift and Caps Lock applied. When right Alt
+  changes that translation into printable text, AltGr's character travels as
+  text with the peer's modifiers bracketed around it.
 
 Pointer movement comes from Raw Input, not from the mouse hook, and that is
 not a preference. A low-level hook reports the cursor's position, which
@@ -335,17 +335,21 @@ VK_CAPITAL = 0x14
 
 class KeyboardState:
     """The keyboard bytes ToUnicodeEx is asked to translate against: shift and
-    caps lock as they really are, every other modifier cleared. Held as a
+    caps lock as they really are, plus AltGr for text; other modifiers cleared. Held as a
     plain dict of virtual key to byte so the translation is testable without
     Windows. Dead accents stay here in software, never in Windows' keyboard state."""
 
     def __init__(self) -> None:
         self.shift_down = False
         self.caps_lock = False
+        self.altgr_down = False
+        self.ctrl_down: Set[int] = set()
         self.pending_dead_key: Optional[str] = None
 
-    def bytes_for(self) -> Dict[int, int]:
+    def bytes_for(self, altgr: bool = True) -> Dict[int, int]:
         state = {VK_SHIFT: 0x80 if self.shift_down else 0x00, VK_CAPITAL: 0x01 if self.caps_lock else 0x00}
+        if altgr and self.altgr_down and not self.ctrl_down:
+            state.update({0x11: 0x80, 0x12: 0x80, 0xA5: 0x80})
         return state
 
 
@@ -369,19 +373,24 @@ def key_name(
     down: bool = True,
 ) -> Optional[Union[str, DeadKey, TextInput]]:
     """The wire name for one key press: a named key where there is one, else
-    the character it types with only shift and caps lock applied. A dead key
+    the character it types with Shift and Caps Lock applied (AltGr text is separate). A dead key
     waits for the next printable character; a key with no usable character is
     ignored."""
+    if state.ctrl_down:
+        state.pending_dead_key = None
     named = VK_TO_NAME.get(vk)
     if named is not None:
         if state.pending_dead_key and named == "space":
             character, state.pending_dead_key = state.pending_dead_key, None
-            return character
+            return TextInput(character) if state.altgr_down and not state.ctrl_down else character
         if state.pending_dead_key and named not in MODIFIER_NAMES:
             state.pending_dead_key = None
         return named
     character = translate(vk, scan, state.bytes_for())
+    altgr_text = state.altgr_down and not state.ctrl_down and character != translate(vk, scan, state.bytes_for(False))
     if isinstance(character, DeadKey):
+        if state.ctrl_down:
+            return character.character
         if down:
             state.pending_dead_key = character.character
         return DeadKey(character.character)
@@ -391,6 +400,9 @@ def key_name(
     if down and state.pending_dead_key:
         character = _compose_dead_key(state.pending_dead_key, character)
         state.pending_dead_key = None
+        altgr_text = state.altgr_down and not state.ctrl_down
+    if down and altgr_text and isinstance(character, str):
+        return TextInput(character)
     return character
 
 
@@ -525,6 +537,8 @@ class Hooks:
         self._state = KeyboardState()
         self._dead_keys_swallowed: Set[int] = set()
         self._text_keyups_swallowed: Set[int] = set()
+        self._key_names: Dict[int, Tuple[str, Optional[str]]] = {}
+        self._composed_local: Dict[int, Union[DeadKey, TextInput]] = {}
         self._failure: Optional[BaseException] = None
         self._handles: List[int] = []
         # Kept alive for as long as the hooks are installed: a callback that
@@ -562,8 +576,14 @@ class Hooks:
                 LOGGER.error("The hook thread did not stop within two seconds")
             else:
                 self._text_keyups_swallowed.clear()
+                self._key_names.clear()
+                self._dead_keys_swallowed.clear()
+                self._composed_local.clear()
         else:
             self._text_keyups_swallowed.clear()
+            self._key_names.clear()
+            self._dead_keys_swallowed.clear()
+            self._composed_local.clear()
         self._thread = None
         self._thread_id = None
 
@@ -617,6 +637,9 @@ class Hooks:
             _unregister_window_class(module)
             self._callbacks = []
             self._text_keyups_swallowed.clear()
+            self._key_names.clear()
+            self._dead_keys_swallowed.clear()
+            self._composed_local.clear()
 
     def _window_proc(self, hwnd, message, wparam, lparam):
         if message == WM_INPUT:
@@ -638,37 +661,78 @@ class Hooks:
             down = wparam in KEY_DOWN_MESSAGES
             if not down and wparam not in KEY_UP_MESSAGES:
                 return user32.CallNextHookEx(None, code, wparam, lparam)
+            if data.vkCode == 0xA2 and data.scanCode == 0x21D:
+                # AltGr's synthetic Ctrl shares a VK with a real held Ctrl, but is not its release.
+                return user32.CallNextHookEx(None, code, wparam, lparam)
             if data.vkCode in (0xA0, 0xA1, 0x10):  # noqa: shift, either side
                 self._state.shift_down = down
             elif data.vkCode == VK_CAPITAL and down:
                 self._state.caps_lock = not self._state.caps_lock
+            elif data.vkCode == 0xA5:
+                self._state.altgr_down = down
+            elif data.vkCode in (0x11, 0xA2, 0xA3) and data.scanCode != 0x21D:
+                # Windows marks AltGr's synthetic left Ctrl with scan code 0x21D.
+                if down:
+                    self._state.ctrl_down.add(data.vkCode)
+                else:
+                    self._state.ctrl_down.discard(data.vkCode)
+            if data.vkCode in self._composed_local:
+                if not down:
+                    name = self._composed_local.pop(data.vkCode)
+                    self._on_key(name, False, data.vkCode, None)
+                return user32.CallNextHookEx(None, code, wparam, lparam)
+            held = self._key_names.get(data.vkCode)
+            if held is not None:
+                if not down:
+                    del self._key_names[data.vkCode]
+                if self._on_key(held[0], down, data.vkCode, held[1]):
+                    return 1
+                return user32.CallNextHookEx(None, code, wparam, lparam)
+            if data.vkCode in self._dead_keys_swallowed:
+                if not down:
+                    self._dead_keys_swallowed.discard(data.vkCode)
+                    self._on_key(DeadKey(""), False, data.vkCode, None)
+                return 1
             if data.vkCode in self._text_keyups_swallowed:
                 if not down:
                     self._text_keyups_swallowed.discard(data.vkCode)
+                    self._on_key(TextInput(""), False, data.vkCode, None)
                 else:
                     repeated = key_name(data.vkCode, data.scanCode, self._state, _to_unicode, True)
-                    if isinstance(repeated, str) and len(repeated) == 1:
+                    if self._state.ctrl_down and isinstance(repeated, str):
+                        us = None if data.flags & LLKHF_EXTENDED else SCAN_TO_US.get(data.scanCode)
+                        self._text_keyups_swallowed.discard(data.vkCode)
+                        self._key_names[data.vkCode] = (repeated, us)
+                        if self._on_key(repeated, True, data.vkCode, us):
+                            return 1
+                        return user32.CallNextHookEx(None, code, wparam, lparam)
+                    elif isinstance(repeated, str) and len(repeated) == 1:
                         self._on_key(TextInput(repeated), True, data.vkCode, None)
+                    elif isinstance(repeated, TextInput):
+                        self._on_key(repeated, True, data.vkCode, None)
                 return 1
             name = key_name(data.vkCode, data.scanCode, self._state, _to_unicode, down)
             if isinstance(name, TextInput):
                 if down and self._on_key(name, down, data.vkCode, None):
                     self._text_keyups_swallowed.add(data.vkCode)
                     return 1
+                if down:
+                    self._composed_local[data.vkCode] = name
                 return user32.CallNextHookEx(None, code, wparam, lparam)
             if isinstance(name, DeadKey):
-                if not down and data.vkCode in self._dead_keys_swallowed:
-                    self._dead_keys_swallowed.discard(data.vkCode)
-                    return 1
                 if down and self._on_key(name, down, data.vkCode, None):
                     self._dead_keys_swallowed.add(data.vkCode)
                     return 1
                 if down:
                     self._state.pending_dead_key = None
+                    self._composed_local[data.vkCode] = name
                 return user32.CallNextHookEx(None, code, wparam, lparam)
             if name is None:
                 return user32.CallNextHookEx(None, code, wparam, lparam)
             us = None if data.flags & LLKHF_EXTENDED else SCAN_TO_US.get(data.scanCode)
+            if down:
+                # A repeat and release belong to this press even if layout or AltGr changes.
+                self._key_names[data.vkCode] = (name, us)
             if self._on_key(name, down, data.vkCode, us):
                 return 1
         except Exception:
@@ -798,6 +862,11 @@ if _IS_WINDOWS:
         ctypes.c_void_p,
     ]
     user32.GetKeyboardLayout.restype = ctypes.c_void_p
+    user32.GetKeyboardLayout.argtypes = [ctypes.c_ulong]
+    user32.GetForegroundWindow.restype = ctypes.c_void_p
+    user32.GetForegroundWindow.argtypes = []
+    user32.GetWindowThreadProcessId.restype = ctypes.c_ulong
+    user32.GetWindowThreadProcessId.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_ulong)]
     # Handles are pointers: without these, ctypes truncates them to a 32-bit
     # int and a 64-bit module handle comes back as rubbish.
     kernel32.GetModuleHandleW.restype = ctypes.c_void_p
@@ -925,7 +994,7 @@ def hand_motion(flags: int, last_x: int, last_y: int, extra_information: int) ->
 
 def _to_unicode(vk: int, scan: int, state: Dict[int, int]) -> Optional[Union[str, DeadKey]]:
     """The character `vk` types under `state`, or None. Called with the
-    non-shift modifiers already cleared, so a chord yields its plain key.
+    shortcut modifiers cleared, or AltGr added to read its printable text.
 
     ToUnicodeEx is asked not to change the keyboard state (the 1<<2 flag):
     the dead accent is tracked in KeyboardState instead.
@@ -936,7 +1005,10 @@ def _to_unicode(vk: int, scan: int, state: Dict[int, int]) -> Optional[Union[str
     for key, value in state.items():
         key_state[key] = bytes([value])
     buffer = ctypes.create_unicode_buffer(8)
-    layout = user32.GetKeyboardLayout(0)
+    # The hook's thread does not follow the foreground app's input-language changes.
+    window = user32.GetForegroundWindow()
+    thread = user32.GetWindowThreadProcessId(window, None) if window else 0
+    layout = user32.GetKeyboardLayout(thread)
     count = user32.ToUnicodeEx(vk, scan, key_state, buffer, len(buffer), 1 << 2, layout)
     if count < 0:
         return DeadKey(buffer.value[:abs(count)]) if buffer.value else None

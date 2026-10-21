@@ -626,6 +626,61 @@ class LinkTests(OwnerCase):
 
 
 class ClipboardTests(OwnerCase):
+    def test_a_copy_during_a_failed_chain_take_goes_before_replayed_input(self):
+        for outcome in ("refused", "timeout", "link_lost"):
+            with self.subTest(outcome=outcome):
+                clock = Clock()
+                o = owner.Owner("A", clock)
+                o.link_up("B", True)
+                o.link_up("C", True)
+                o.go("B")
+                o.accept("B", {"route": o.route})
+                o.switch("B", {"route": o.route, "next": "C"})
+                o.clipboard_changed()
+                self.assertEqual(o.clipboard_pending(), [])
+                paste = key("keydown", "v")
+                o.input(paste)
+                if outcome == "refused":
+                    actions = o.refuse("C", {"route": o.route, "why": "owned"})
+                elif outcome == "timeout":
+                    clock.now += owner.TAKE_WAIT
+                    actions = o.tick()
+                else:
+                    actions = o.link_down("C")
+                self.assertIn(SendClipboard("B"), actions)
+                self.assertLess(actions.index(SendClipboard("B")), actions.index(Send("B", paste)))
+
+    def test_a_failed_read_or_post_remains_pending_for_a_later_attempt(self):
+        self.take("B")
+        self.o.clipboard_failed("B")
+        self.assertEqual(self.o.clipboard_pending(), [SendClipboard("B")])
+        self.assertEqual(self.o.clipboard_pending(), [])
+
+    def test_a_copy_after_a_crossing_reaches_the_active_peer(self):
+        self.take("B")
+        for _ in range(50):
+            self.o.clipboard_changed()
+            self.assertEqual(self.o.clipboard_pending(), [SendClipboard("B")])
+            self.assertEqual(self.o.clipboard_pending(), [])
+        self.o.go(None)
+        self.o.clipboard_changed()
+        self.assertEqual(self.o.clipboard_pending(), [])
+
+    def test_a_retry_waits_for_the_take_to_be_accepted(self):
+        self.o.go("B")
+        self.o.clipboard_failed("B")
+        self.assertEqual(self.o.clipboard_pending(), [])
+        self.o.accept("B", {"route": self.o.route})
+        self.assertEqual(self.o.clipboard_pending(), [SendClipboard("B")])
+
+    def test_a_frame_started_before_let_go_cannot_consume_the_return_clipboard(self):
+        self.take("B")
+        self.o.go(None)
+        message = {"type": "clipboard", "data": {"text": "copied on B"}}
+        self.assertFalse(self.o.expects_clipboard("B", 999.9))
+        self.assertEqual(self.o.clipboard_arrived("B", 999.9, message), [])
+        self.assertEqual(self.o.clipboard_arrived("B", 1000.1, message), [SetClipboard(message)])
+
     def test_a_refused_take_does_not_count_as_having_the_clipboard(self):
         self.o.go("B")
         self.o.refuse("B", {"route": 1, "why": "owned"})

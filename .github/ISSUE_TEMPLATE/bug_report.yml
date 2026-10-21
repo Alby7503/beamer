@@ -46,4 +46,5 @@ body:
       label: Logs
       description: |
         Attach Beamer.log from each machine, or paste the lines from around the time it went wrong. Open log folder in Beamer's menu shows where it is.
+        On Linux, the file is ~/.config/Beamer/Beamer.log; on Flatpak, it is ~/.var/app/uk.co.kalkman.beamer/config/Beamer/Beamer.log.
         The log holds your machines' names and local network addresses; remove them if you would rather not share them.

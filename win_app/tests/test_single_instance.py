@@ -113,7 +113,7 @@ class SingleInstanceTests(unittest.TestCase):
 
     def test_startup_migrates_the_legacy_task_before_single_instance_handling(self):
         order = []
-        with mock.patch.object(kvm_bridge_win, "parse_args", return_value=type("Args", (), {"hidden": True, "relaunched": False})()), \
+        with mock.patch.object(kvm_bridge_win, "parse_args", return_value=type("Args", (), {"hidden": True, "relaunched": False, "identify_x11": None})()), \
              mock.patch.object(kvm_bridge_win, "prepare_windows_startup", side_effect=lambda: order.append("migrate")), \
              mock.patch.object(kvm_bridge_win, "_claim_instance", side_effect=lambda: order.append("claim") or None), \
              mock.patch.object(kvm_bridge_win, "activate_existing_instance") as activate:
@@ -122,7 +122,7 @@ class SingleInstanceTests(unittest.TestCase):
         activate.assert_called_once_with(True, mock.ANY)
 
     def test_failed_migration_still_reaches_instance_handling(self):
-        with mock.patch.object(kvm_bridge_win, "parse_args", return_value=type("Args", (), {"hidden": True, "relaunched": False})()), \
+        with mock.patch.object(kvm_bridge_win, "parse_args", return_value=type("Args", (), {"hidden": True, "relaunched": False, "identify_x11": None})()), \
              mock.patch.object(kvm_bridge_win, "prepare_windows_startup", side_effect=OSError("Access is denied")), \
              mock.patch.object(kvm_bridge_win, "_claim_instance", return_value=None) as claim, \
              mock.patch.object(kvm_bridge_win, "activate_existing_instance"), \

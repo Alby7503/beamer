@@ -50,14 +50,23 @@ class Gate:
     forgets remote presses when input comes home, while locally kept presses remain until their
     physical releases arrive. It is called from other threads, hence the lock."""
 
-    def __init__(self, entries=()):
+    def __init__(self, entries=(), *, mouse_only=False):
         self.entries = frozenset(entries)
+        self.mouse_only = mouse_only
         self._sent = set()
         self._kept = set()
         self._lock = threading.Lock()
 
-    def configure(self, entries):
-        self.entries = frozenset(entries)
+    def configure(self, entries, *, mouse_only=False):
+        with self._lock:
+            self.entries = frozenset(entries)
+            self.mouse_only = mouse_only
+
+    def keeps_tap(self, entry):
+        """Dead keys, composed text and toggles arrive as whole presses, without a later release."""
+        kept = self.keeps(entry, True)
+        self.keeps(entry, False)
+        return kept
 
     def keeps(self, entry, down):
         with self._lock:
@@ -69,7 +78,7 @@ class Gate:
                 if not down:
                     self._kept.discard(entry)
                 return True
-            if entry in self.entries:
+            if entry in self.entries or (self.mouse_only and entry.startswith(("key:", "media:"))):
                 if down:
                     self._kept.add(entry)
                 return True

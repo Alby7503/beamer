@@ -109,6 +109,7 @@ MSG_GESTURE = "gesture"
 MSG_SWITCH = "switch"
 MSG_ARRANGEMENT = "arrangement"
 MSG_SETTINGS = "settings"
+MSG_IDENTIFY_SCREENS = "identify_screens"
 
 # System trackpad gestures. The Mac classifies one at the end of the movement and sends a
 # single message; the name is the finger motion, not its meaning, so the receiver decides
@@ -376,6 +377,25 @@ def settings_msg(data: dict) -> dict:
     new connection. Profile registers use settings_sync.desk_message_data for a
     separate frame; older peers never receive that optional member."""
     return {"type": MSG_SETTINGS, "data": dict(data)}
+
+
+def identify_screens_msg(displays: dict) -> dict:
+    """One machine's map labels; optional on wire 6, sent only to capable peers."""
+    return {"type": MSG_IDENTIFY_SCREENS, "data": {"displays": dict(displays)}}
+
+
+def read_identify_screens(message):
+    parsed = read_message(message)
+    if parsed is None or parsed[0] != MSG_IDENTIFY_SCREENS:
+        return None
+    displays = parsed[1].get("displays")
+    if (not isinstance(displays, dict) or not 1 <= len(displays) <= 16
+            or any(not isinstance(key, str) or _DISPLAY_KEY.fullmatch(key) is None
+                   or type(number) is not int or not 1 <= number <= 16
+                   for key, number in displays.items())
+            or len(set(displays.values())) != len(displays)):
+        return None
+    return dict(displays)
 
 
 def gesture_msg(name: str) -> dict:

@@ -35,6 +35,7 @@ from core import crash_log
 from core import effects
 from core.i18n import matches_translation, LANGUAGES, N_, tr, trc, install
 import effects_overlay
+import identify_overlay
 import gestures
 import hardware_mac
 import ignored_titles
@@ -1213,6 +1214,7 @@ class ControlWindow(AppKit.NSObject):
         # made during this run needs a relaunch before the keyboard crosses, however ready the tap looks.
         self.granted_at_launch = accessibility_granted() and input_monitoring_granted()
         self.update_checker = None
+        self._update = None
         # The list of paired machines and the pairing sheet; TrayApp gives it the pairing service.
         self.panel = machines_panel.MachinesPanel(controller, settings_store, logger, self)
         self._machines_first = None
@@ -1287,6 +1289,7 @@ class ControlWindow(AppKit.NSObject):
         self.sidebar.footer_icon.setImage_(menu_bar_glyph("local"))
         divider = widgets.box("rule")
         pane = widgets.stack(spacing=0)
+        pane.setDetachesHiddenViews_(True)
         for view in (top, self.sidebar.view, divider, pane):
             content.addSubview_(view)
         self.sidebar_width = self.sidebar.view.widthAnchor().constraintEqualToConstant_(theme.SIDEBAR_WIDTH[1])
@@ -1312,6 +1315,17 @@ class ControlWindow(AppKit.NSObject):
             pane.leadingAnchor().constraintEqualToAnchor_(divider.trailingAnchor()),
             pane.trailingAnchor().constraintEqualToAnchor_(content.trailingAnchor()),
         ])
+        self.update_notice = widgets.Module()
+        self.update_notice_text = widgets.Label("", theme.TYPE["body"], wrap=True)
+        self.update_notice.add(self.update_notice_text.view)
+        actions = widgets.stack(vertical=False, spacing=12)
+        self.update_notes = widgets.Button(tr("What's new"), self, "downloadUpdate:")
+        self.update_dismiss = widgets.Button(tr("Dismiss"), self, "dismissUpdate:")
+        widgets.add(actions, self.update_notes.view, full_width=False)
+        widgets.add(actions, self.update_dismiss.view, full_width=False)
+        self.update_notice.add(actions)
+        self.update_notice.view.setHidden_(True)
+        widgets.add(pane, self.update_notice.view)
         # The page host is the only part of the pane that gives way when the window is resized;
         # the commit bar keeps its height on every page.
         host = widgets.stack(spacing=0)
@@ -1536,6 +1550,7 @@ class ControlWindow(AppKit.NSObject):
         self.pointer_numeral.set(str(self.pointer_ruler.value))
         self.scroll_numeral.set(str(self.scroll_ruler.value))
         self.reverse_scroll_box.value = raw["reverse_scroll"]
+        self.mouse_only_box.value = raw["mouse_only"]
         self.appearance_select.value = raw["appearance"]
         self.language_select.value = raw["language"]
         self._apply_appearance(raw["appearance"])
@@ -2923,10 +2938,34 @@ class ControlWindow(AppKit.NSObject):
     @objc.python_method
     def show_update(self, found):
         """`found` is (version, url) for a newer release, or None."""
+        if not self.controller.cfg.check_updates:
+            found = None
+        self._update = found
         self.update_url = found[1] if found else None
         if found:
             self.update_button.set_title(tr("Download Beamer {version}").format(version=found[0]))
         motion.set_hidden(self.update_button.view, found is None)
+        self._refresh_update_notice()
+
+    @objc.python_method
+    def _refresh_update_notice(self):
+        found = updates.visible_notice(self._update, self.controller.cfg.check_updates,
+                                       self.settings_store.current().get("dismissed_update_version", ""))
+        if found:
+            self.update_notice_text.set(tr("Beamer {version} is available.").format(version=found[0]))
+        self.update_notice.view.setHidden_(not bool(found))
+
+    def dismissUpdate_(self, _sender):
+        if not self._update:
+            return
+        try:
+            cfg = self.settings_store.save(config_to_raw(self.controller.cfg),
+                                           settings_changes={"dismissed_update_version": self._update[0]})
+        except SettingsError as exc:
+            self.logger.warning("Update dismissal could not be saved: %s", exc)
+            return
+        self.controller.update_config(cfg)
+        self._refresh_update_notice()
 
     def downloadUpdate_(self, _sender):
         if self.update_url:
@@ -3162,7 +3201,12 @@ class ControlWindow(AppKit.NSObject):
 
     @objc.python_method
     def _keyboard_page(self, body):
-        # Modifier keys first: chosen once, while the list below grows as keys are added.
+        module = widgets.Module()
+        self.mouse_only_box = widgets.Switch(tr("Mouse only"), on_change=self._changed)
+        module.add(widgets.eyebrow(tr("Keyboard sharing")))
+        module.add(self.mouse_only_box.view)
+        module.add(widgets.note(tr("Keep this machine's keyboard here. Pointer and clipboard sharing stay on.")).view)
+        widgets.add(body, module.view)
         widgets.add(body, self._modifier_module().view)
         widgets.add(body, self._ignored_module().view)
         widgets.add(body, self._speed_module().view)
@@ -3332,6 +3376,11 @@ class ControlWindow(AppKit.NSObject):
         self.atlas_canvas.on_cycle_change = self._set_shortcut_cycle
         self.atlas_canvas.on_leave_out = lambda peer: self._set_atlas_left_out(peer, True)
         module.add(self.atlas_canvas)
+        self.identify_screens_button = widgets.action_button(
+            tr("Identify screens"), self.controller.identify_screens, scale="small")
+        self.identify_screens_button.view.setToolTip_(
+            tr("Show these numbers on every linked machine's screens for 3 seconds."))
+        module.add(self.identify_screens_button.view, full_width=False)
         self.atlas_canvas_hint = widgets.note(tr("Option-click a display to split or group · drag to move · click a third of a lit edge to leave it out · drag a corner to resize"))
         module.add(self.atlas_canvas_hint.view)
         module.body.setCustomSpacing_afterView_(8, self.atlas_canvas)
@@ -4454,6 +4503,7 @@ class ControlWindow(AppKit.NSObject):
 
     @objc.python_method
     def show(self):
+        self._refresh_update_notice()
         if self.activation_policy_handler is not None:
             self.activation_policy_handler(window_open=True)
         self._select_page(pages.opening_page(
@@ -4538,6 +4588,7 @@ class ControlWindow(AppKit.NSObject):
         try:
             raw["trigger_key"] = self.key_recorder.value
             raw["ignored_inputs"] = list(self.ignored_entries)
+            raw["mouse_only"] = self.mouse_only_box.value
             raw["trigger_style"] = self.style_select.value
             raw["double_tap_ms"] = self.double_tap_ruler.value
             raw["pointer_speed"] = self.pointer_ruler.value / 100
@@ -5015,6 +5066,8 @@ class TrayApp(rumps.App):
         self.notch_island = NotchIsland(controller, logger)
         self.notch_beam = NotchBeam(controller, logger)
         self.effects_overlay = effects_overlay.EffectsOverlay(controller, logger)
+        self.identify_overlay = identify_overlay.IdentifyOverlay(logger)
+        self.controller.on_identify_screens = lambda labels: AppHelper.callAfter(self.identify_overlay.show, labels)
         self.haptics = Haptics(logger)
         self._resistance_pressure_timer = None
         self.control_window.preview = self.edge_glow.preview
@@ -5105,6 +5158,8 @@ class TrayApp(rumps.App):
 
     def _update_found(self, found):
         """On the main thread. The version line in the menu becomes the way to the download."""
+        if not self.controller.cfg.check_updates:
+            found = None
         self.update_url = found[1] if found else None
         if found:
             _set_tray_title(self.header_item, tr("Beamer {version} is available…").format(version=found[0]))

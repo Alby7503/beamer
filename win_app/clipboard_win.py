@@ -23,6 +23,7 @@ import ctypes
 import logging
 import struct
 import sys
+import threading
 import time
 from typing import Optional, Tuple
 
@@ -57,6 +58,14 @@ if _IS_WINDOWS:
     kernel32.GlobalSize.argtypes = [ctypes.c_void_p]
     user32.GetClipboardSequenceNumber.restype = ctypes.c_uint32
     user32.GetClipboardSequenceNumber.argtypes = []
+    user32.CreateWindowExW.restype = ctypes.c_void_p
+    user32.CreateWindowExW.argtypes = [
+        ctypes.c_uint32, ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_uint32,
+        ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+        ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
+    ]
+    user32.DestroyWindow.restype = ctypes.c_int
+    user32.DestroyWindow.argtypes = [ctypes.c_void_p]
 
 CF_DIB = 8
 CF_UNICODETEXT = 13
@@ -76,6 +85,8 @@ _ALPHA_MASK = 0xFF000000
 # then and after forget_sync. A switch sends the clipboard only when the number has moved since,
 # so an unchanged screenshot is not pushed across on every switch.
 _synced_sequence = None
+_written_sequence = None
+_LOCK = threading.RLock()
 
 OPEN_RETRY_ATTEMPTS = 5
 OPEN_RETRY_DELAY_SECONDS = 0.05
@@ -203,13 +214,13 @@ def dib_to_png(dib: bytes) -> Optional[bytes]:
         return None
 
 
-def _open_clipboard(win32, attempts=OPEN_RETRY_ATTEMPTS, delay=OPEN_RETRY_DELAY_SECONDS, sleep=time.sleep):
-    """Try OpenClipboard(None) up to `attempts` times, sleeping `delay`
+def _open_clipboard(win32, attempts=OPEN_RETRY_ATTEMPTS, delay=OPEN_RETRY_DELAY_SECONDS, sleep=time.sleep, owner=None):
+    """Try OpenClipboard(owner) up to `attempts` times, sleeping `delay`
     seconds between tries. Pure orchestration over an injected `win32` (the
     real user32 WinDLL, or a duck-typed fake) so the retry/backoff decision
     is testable without a real Windows clipboard."""
     for attempt in range(attempts):
-        if win32.OpenClipboard(None):
+        if win32.OpenClipboard(owner):
             return True
         if attempt + 1 < attempts:
             sleep(delay)
@@ -276,8 +287,16 @@ def _get_contents(win32, mem32, attempts=OPEN_RETRY_ATTEMPTS, delay=OPEN_RETRY_D
         LOGGER.warning("could not open the clipboard for reading")
         return None, None
     try:
-        text = _read_clipboard_text(win32, mem32)
-        dib = _read_clipboard_dib(win32, mem32)
+        try:
+            text = _read_clipboard_text(win32, mem32)
+        except Exception:
+            LOGGER.exception("failed to read clipboard text")
+            text = None
+        try:
+            dib = _read_clipboard_dib(win32, mem32)
+        except Exception:
+            LOGGER.exception("failed to read the clipboard image")
+            dib = None
     finally:
         win32.CloseClipboard()
     # Converted after the clipboard is closed: a Retina-sized DIB takes
@@ -286,28 +305,40 @@ def _get_contents(win32, mem32, attempts=OPEN_RETRY_ATTEMPTS, delay=OPEN_RETRY_D
     return text, dib_to_png(dib) if dib is not None else None
 
 
-def _set_contents(win32, mem32, text, png, attempts=OPEN_RETRY_ATTEMPTS, delay=OPEN_RETRY_DELAY_SECONDS, sleep=time.sleep):
+def _set_contents(win32, mem32, text, png, attempts=OPEN_RETRY_ATTEMPTS, delay=OPEN_RETRY_DELAY_SECONDS, sleep=time.sleep, written=None):
     dib = png_to_dib(png) if png is not None else None
     if png is not None and dib is None:
         LOGGER.warning("inbound clipboard image did not decode; setting the text only")
     if text is None and dib is None:
         return False
-    if not _open_clipboard(win32, attempts, delay, sleep):
-        LOGGER.warning("could not open the clipboard for writing")
+    # EmptyClipboard with a NULL owner makes SetClipboardData fail. A message-only window
+    # belongs to this worker even when the app has no visible panel, and never takes focus.
+    owner = win32.CreateWindowExW(0, "STATIC", None, 0, 0, 0, 0, 0, -3, None, None, None)
+    if not owner:
+        LOGGER.warning("could not create the clipboard owner")
         return False
     try:
-        win32.EmptyClipboard()
-        wrote = False
-        if text is not None:
-            # CF_UNICODETEXT is CRLF by convention; a Mac's LF alone reads as one
-            # line in the older Windows apps.
-            text = text.replace("\r\n", "\n").replace("\n", "\r\n")
-            wrote |= _put_clipboard_data(win32, mem32, CF_UNICODETEXT, text.encode("utf-16-le") + b"\x00\x00")
-        if dib is not None:
-            wrote |= _put_clipboard_data(win32, mem32, CF_DIB, dib)
-        return wrote
+        if not _open_clipboard(win32, attempts, delay, sleep, owner=owner):
+            LOGGER.warning("could not open the clipboard for writing")
+            return False
+        try:
+            if not win32.EmptyClipboard():
+                return False
+            wrote = False
+            if text is not None:
+                # CF_UNICODETEXT is CRLF by convention; a Mac's LF alone reads as one
+                # line in the older Windows apps.
+                text = text.replace("\r\n", "\n").replace("\n", "\r\n")
+                wrote |= _put_clipboard_data(win32, mem32, CF_UNICODETEXT, text.encode("utf-16-le") + b"\x00\x00")
+            if dib is not None:
+                wrote |= _put_clipboard_data(win32, mem32, CF_DIB, dib)
+            if wrote and written is not None:
+                written(win32.GetClipboardSequenceNumber())
+            return wrote
+        finally:
+            win32.CloseClipboard()
     finally:
-        win32.CloseClipboard()
+        win32.DestroyWindow(owner)
 
 
 def get_contents() -> Tuple[Optional[str], Optional[bytes]]:
@@ -317,7 +348,8 @@ def get_contents() -> Tuple[Optional[str], Optional[bytes]]:
     if not _IS_WINDOWS:
         return None, None
     try:
-        return _get_contents(user32, kernel32)
+        with _LOCK:
+            return _get_contents(user32, kernel32)
     except Exception:
         LOGGER.exception("failed to read the Windows clipboard")
         return None, None
@@ -350,18 +382,23 @@ def forget_sync() -> None:
     _synced_sequence = None
 
 
+def write_stamp():
+    """The last peer write, rather than a newer copy made after CloseClipboard."""
+    return _written_sequence
+
+
 def set_contents(text: Optional[str], png: Optional[bytes]) -> bool:
     """Replace the Windows clipboard with `text` and/or `png`. Returns True
     when at least one was set, False if this isn't Windows or the write
     failed. Never raises."""
-    global _synced_sequence
     if not _IS_WINDOWS:
         return False
+    def remember(sequence):
+        global _synced_sequence, _written_sequence
+        _synced_sequence = _written_sequence = sequence
     try:
-        wrote = _set_contents(user32, kernel32, text, png)
-        if wrote:
-            _synced_sequence = user32.GetClipboardSequenceNumber()
-        return wrote
+        with _LOCK:
+            return _set_contents(user32, kernel32, text, png, written=remember)
     except Exception:
         LOGGER.exception("failed to set the Windows clipboard")
         return False

@@ -1705,6 +1705,7 @@ class CrossingWiringTests(unittest.TestCase):
         up = {FakeQuartz.kCGKeyboardEventKeycode: 0x3D, "flags": 0}
         self.assertIsNone(self.controller._event_tap_callback(None, FakeQuartz.kCGEventFlagsChanged, down, None))
         self.assertTrue(self.controller.redirecting)
+        settle(self.controller)
         self.assertIsNone(self.controller._event_tap_callback(None, FakeQuartz.kCGEventFlagsChanged, up, None))
         self.assertFalse(self.controller.redirecting)
         self.assertEqual(

@@ -35,6 +35,39 @@ def make_config(**overrides):
 
 
 class SenderTests(unittest.TestCase):
+    def test_mouse_only_keeps_keys_dead_keys_text_and_media_here(self):
+        self.sender.update_config(rig_config(mouse_only=True))
+        for name, vk in (("a", VK_A), ("volume_up", 0xAF), ("shift", 0xA0), ("b", None)):
+            self.assertFalse(self.sender.on_key(name, True, vk))
+            self.assertFalse(self.sender.on_key(name, False, vk))
+        for vk in (VK_A, None):
+            self.assertFalse(self.sender.on_dead_key(vk))
+            self.assertFalse(self.sender.on_text("á", vk))
+        self.assertEqual(self.sent(), [])
+        self.assertEqual(self.rig.sent(B, protocol.MSG_TEXT), [])
+        self.assertTrue(self.sender.on_button("left", True))
+        self.assertTrue(self.sender.on_button("left", False))
+        self.assertEqual(self.sent(), [(protocol.MSG_MOUSEDOWN, {"button": "left"}),
+                                       (protocol.MSG_MOUSEUP, {"button": "left"})])
+
+    def test_mouse_only_composed_text_can_cross_again_after_switching_off(self):
+        self.rig.links.caps_of[B] = frozenset({"text"})
+        self.sender.update_config(rig_config(mouse_only=True))
+        self.assertFalse(self.sender.on_text("á", VK_A))
+        self.sender.on_key("a", False, VK_A)
+        self.sender.update_config(rig_config(mouse_only=False))
+        self.assertTrue(self.sender.on_text("á", VK_A))
+        self.assertEqual(self.rig.sent(B, protocol.MSG_TEXT), [protocol.text_msg("á")])
+
+    def test_composed_text_repeats_follow_the_press_when_mouse_only_changes(self):
+        self.rig.links.caps_of[B] = frozenset({"text"})
+        self.assertTrue(self.sender.on_text("á", VK_A))
+        self.sender.update_config(rig_config(mouse_only=True))
+        self.assertTrue(self.sender.on_text("a", VK_A))
+        self.assertTrue(self.sender.on_text("", VK_A, False))
+        self.assertFalse(self.sender.on_text("a", VK_A))
+        self.assertEqual(self.rig.sent(B, protocol.MSG_TEXT), [protocol.text_msg("á"), protocol.text_msg("a")])
+
     def setUp(self):
         self.rig = Rig(cursor=(900, 500), ignored_inputs=[ignored.key(VK_F13), ignored.button("back")])
         self.sender = self.rig.sender
@@ -148,6 +181,17 @@ class CaptureTests(unittest.TestCase):
 
 
 class ConfigTests(unittest.TestCase):
+    def test_mouse_only_defaults_off_and_survives_save_reload(self):
+        raw = app_config.config_to_dict(make_config(port=24820))
+        raw.pop("mouse_only")
+        self.assertFalse(app_config.config_from_dict(raw).mouse_only)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "settings.json"
+            app_config.save_config(path, make_config(port=24820, mouse_only=True))
+            self.assertTrue(app_config.load_config(path).mouse_only)
+        with self.assertRaises(app_config.ConfigError):
+            app_config.validate_config(make_config(port=24820, mouse_only="true"))
+
     def test_the_list_survives_a_save_and_a_load(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "settings.json"

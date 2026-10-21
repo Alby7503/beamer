@@ -187,6 +187,7 @@ class Config:
     mac_hardware_address: str = ""
     # Keys and buttons that stay on this PC while its input is on the Mac; see ignored.py.
     ignored_inputs: list = field(default_factory=list)
+    mouse_only: bool = False
     # The window's own palette: follow Windows, or keep one. tokens.APPEARANCES is the home of
     # these three values.
     appearance: str = "system"
@@ -313,6 +314,8 @@ def validate_config(config: Config) -> None:
             raise ConfigError(f"{name} must be a number from 0.25 to 4")
     if not isinstance(config.reverse_scroll, bool):
         raise ConfigError("reverse_scroll must be true or false")
+    if not isinstance(config.mouse_only, bool):
+        raise ConfigError("mouse_only must be true or false")
     try:
         reconnect_interval_s = float(config.reconnect_interval_s)
     except (TypeError, ValueError) as exc:
@@ -430,6 +433,7 @@ def config_from_dict(raw: dict) -> Config:
             arrangement_set_at=int(raw.get("arrangement_set_at", 0)),
             mac_resistance_px=int(raw.get("mac_resistance_px", 120)),
             ignored_inputs=raw.get("ignored_inputs", []),
+            mouse_only=raw.get("mouse_only", False),
             appearance=raw.get("appearance") if raw.get("appearance") in tokens.APPEARANCES else "system",
             machine_id=raw.get("machine_id", "") or "",
             name=raw.get("name", "") or "",
@@ -515,6 +519,7 @@ def config_to_dict(config: Config) -> dict:
         "arrangement_set_at": int(config.arrangement_set_at),
         "mac_resistance_px": int(config.mac_resistance_px),
         "ignored_inputs": list(config.ignored_inputs),
+        "mouse_only": config.mouse_only,
         "appearance": config.appearance,
         "machine_id": config.machine_id,
         "name": config.name,

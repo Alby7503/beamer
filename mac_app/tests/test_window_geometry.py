@@ -32,6 +32,7 @@ def offscreen_control_window():
     store._cache, _changes = profiles.after_load(
         store._complete(settings), platform="mac", capable=(), now=time.time(), app=settings_store.PROFILE_APP_VERSION)
     store.save = mock.Mock(return_value=cfg)
+    store.save_settings = mock.Mock()
     logger = logging.getLogger("test-window-geometry")
     from wake import WakingController
 

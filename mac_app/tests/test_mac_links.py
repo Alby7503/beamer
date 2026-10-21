@@ -9,6 +9,7 @@ import sys
 import threading
 import time
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
@@ -340,11 +341,11 @@ class SlowPasteboardTests(Base):
         settle(self.controller)
         self.assertEqual(self.order, [protocol.MSG_FOCUS, protocol.MSG_CLIPBOARD])
 
-    def test_stopping_during_the_read_still_lets_the_machine_go_after_it(self):
+    def test_stopping_during_the_read_skips_the_clipboard_and_still_lets_the_machine_go(self):
         self.take()
         threading.Timer(0.2, self.release.set).start()
         self.controller.stop()
-        self.assertIn(protocol.MSG_CLIPBOARD, self.order)
+        self.assertNotIn(protocol.MSG_CLIPBOARD, self.order)
         let_go = [m for m in self.link.posted if m["type"] == protocol.MSG_FOCUS][-1]["data"]
         self.assertEqual(let_go["target"], self.own)
 
@@ -566,6 +567,194 @@ class ComingHomeTests(Base):
 
 
 class ClipboardTests(Base):
+    def test_a_read_finishing_after_home_never_posts_private_local_text(self):
+        self.up()
+        self.controller.set_redirecting(True)
+        settle(self.controller)
+        self.link.arrives(self.controller, protocol.accept_msg(1))
+        self.link.posted.clear()
+        self.clipboard.copy("before home")
+        def copied_after_home():
+            self.controller.set_redirecting(False)
+            self.clipboard.copy("private local text")
+            return self.clipboard.text, None
+        with mock.patch.object(self.clipboard, "get_contents", side_effect=copied_after_home) as read:
+            self.controller._owner_tick()
+            settle(self.controller)
+        self.assertEqual(read.call_count, 1)
+        self.assertNotIn(protocol.MSG_CLIPBOARD, self.link.types())
+
+    def test_a_source_retry_stops_after_home_even_if_the_stamp_is_unchanged(self):
+        self.up()
+        self.controller.set_redirecting(True)
+        settle(self.controller)
+        self.link.arrives(self.controller, protocol.accept_msg(1))
+        self.link.posted.clear()
+        self.clipboard.copy("before home")
+        stamp = self.clipboard.stamp
+        def unavailable_after_home():
+            self.controller.set_redirecting(False)
+            return None, None
+        with mock.patch.object(self.clipboard, "get_contents", side_effect=unavailable_after_home) as read:
+            self.controller._owner_tick()
+            settle(self.controller)
+        self.assertEqual(read.call_count, 1)
+        self.assertEqual(self.clipboard.stamp, stamp)
+        self.assertNotIn(protocol.MSG_CLIPBOARD, self.link.types())
+
+    def test_copies_while_the_panel_is_hidden_reach_the_active_peer(self):
+        self.up()
+        self.controller.set_redirecting(True)
+        settle(self.controller)
+        self.link.arrives(self.controller, protocol.accept_msg(1))
+        for text in ("first", "日本語 — café 𝄞", "large " * 20000):
+            self.clock.value += 0.1
+            self.clipboard.copy(text)
+            self.controller._owner_tick()
+            settle(self.controller)
+            self.assertEqual(self.link.posted[-1], protocol.clipboard_msg(text))
+
+    def test_a_transient_read_or_post_failure_recovers_without_another_crossing(self):
+        self.up()
+        self.controller.set_redirecting(True)
+        settle(self.controller)
+        self.link.arrives(self.controller, protocol.accept_msg(1))
+        for failure in ("read", "read_exception", "post", "post_exception"):
+            with self.subTest(failure=failure):
+                text = "new local copy: " + failure
+                self.clipboard.copy(text)
+                read, post = self.clipboard.get_contents, self.link.post
+                calls = []
+                def attempt(*args):
+                    calls.append(True)
+                    if len(calls) == 1:
+                        if failure.endswith("exception"):
+                            raise OSError("clipboard temporarily busy")
+                        return (None, None) if failure == "read" else False
+                    return read() if failure.startswith("read") else post(*args)
+                target, name = (self.clipboard, "get_contents") if failure.startswith("read") else (self.link, "post")
+                with mock.patch.object(target, name, side_effect=attempt):
+                    self.controller._owner_tick()
+                    settle(self.controller)
+                self.assertEqual(len(calls), 2)
+                self.assertEqual(self.link.posted[-1], protocol.clipboard_msg(text))
+
+    def test_a_persistent_source_read_failure_is_bounded_and_releases_input(self):
+        self.up()
+        self.controller.set_redirecting(True)
+        settle(self.controller)
+        self.link.arrives(self.controller, protocol.accept_msg(1))
+        self.clipboard.copy("temporarily unreadable")
+        with mock.patch.object(self.clipboard, "get_contents", return_value=(None, None)) as read:
+            self.controller._owner_tick()
+            self.controller._step(lambda owner: owner.input({"type": "keydown", "data": {"key": "a"}}))
+            settle(self.controller)
+        self.assertEqual(read.call_count, 3)
+        self.assertEqual(self.link.sent[-1]["type"], protocol.MSG_KEYDOWN)
+
+    def test_a_source_retry_never_reads_a_newer_copy_for_the_old_attempt(self):
+        self.up()
+        self.controller.set_redirecting(True)
+        settle(self.controller)
+        self.link.arrives(self.controller, protocol.accept_msg(1))
+        self.clipboard.copy("first generation")
+        def changed_while_busy():
+            self.clipboard.copy("new generation")
+            return None, None
+        with mock.patch.object(self.clipboard, "get_contents", side_effect=changed_while_busy) as read:
+            self.controller._owner_tick()
+            settle(self.controller)
+        self.assertEqual(read.call_count, 1)
+        self.controller._owner_tick()
+        settle(self.controller)
+        self.assertEqual(self.link.posted[-1], protocol.clipboard_msg("new generation"))
+
+    def test_an_inbound_write_exception_is_retried(self):
+        write = self.clipboard.set_contents
+        calls = []
+        def temporarily_busy(text, image):
+            calls.append(text)
+            if len(calls) == 1:
+                raise OSError("clipboard temporarily busy")
+            return write(text, image)
+        with mock.patch.object(self.clipboard, "set_contents", side_effect=temporarily_busy):
+            self.controller._set_clipboard(protocol.clipboard_msg("remote copy"))
+        self.assertEqual(calls, ["remote copy", "remote copy"])
+        self.assertEqual(self.clipboard.text, "remote copy")
+
+    def test_a_copy_completed_before_accept_is_forwarded_on_accept(self):
+        self.up()
+        self.controller.set_redirecting(True)
+        settle(self.controller)
+        self.clipboard.copy("copy completed after the crossing")
+        self.link.arrives(self.controller, protocol.accept_msg(1))
+        settle(self.controller)
+        self.assertEqual(self.link.posted[-1], protocol.clipboard_msg(self.clipboard.text))
+
+    def test_a_failed_read_is_tried_again_on_the_next_crossing(self):
+        self.up()
+        read = self.clipboard.get_contents
+        self.clipboard.get_contents = lambda: (None, None)
+        self.controller.set_redirecting(True)
+        settle(self.controller)
+        self.link.arrives(self.controller, protocol.accept_msg(1))
+        self.controller.set_redirecting(False)
+        self.clipboard.get_contents = read
+        self.link.posted.clear()
+        self.controller.set_redirecting(True)
+        settle(self.controller)
+        self.assertIn(protocol.clipboard_msg("hello"), self.link.posted)
+
+    def test_a_failed_post_is_tried_again_on_the_next_crossing(self):
+        self.up()
+        post = self.link.post
+        self.link.post = lambda message: False if message["type"] == protocol.MSG_CLIPBOARD else post(message)
+        self.controller.set_redirecting(True)
+        settle(self.controller)
+        self.link.arrives(self.controller, protocol.accept_msg(1))
+        self.controller.set_redirecting(False)
+        self.link.post = post
+        self.link.posted.clear()
+        self.controller.set_redirecting(True)
+        settle(self.controller)
+        self.assertIn(protocol.clipboard_msg("hello"), self.link.posted)
+
+    def test_failed_inbound_writes_do_not_swallow_a_local_copy(self):
+        self.up()
+        self.controller._note_clipboard()
+        before = self.controller._clipboard_stamp
+        self.clipboard.copy("local copy")
+        self.clipboard.set_contents = lambda text, image: False
+        self.controller._set_clipboard(protocol.clipboard_msg("remote copy"))
+        self.assertEqual(self.controller._clipboard_stamp, before)
+
+    def test_an_inbound_write_retry_keeps_a_newer_local_copy(self):
+        self.up()
+        calls = []
+        def copied_while_busy(text, image):
+            calls.append(text)
+            self.clipboard.copy("newer local copy")
+            return False
+        self.clipboard.set_contents = copied_while_busy
+        self.controller._set_clipboard(protocol.clipboard_msg("remote copy"))
+        self.assertEqual(calls, ["remote copy"])
+        self.assertEqual(self.clipboard.text, "newer local copy")
+
+    def test_a_copy_during_a_peer_write_is_not_mistaken_for_the_peer_write(self):
+        self.up()
+        self.controller._note_clipboard()
+        write_stamp = self.clipboard.stamp + 1
+        self.clipboard.write_stamp = lambda: write_stamp
+        write = self.clipboard.set_contents
+        def copied_after_write(text, image):
+            result = write(text, image)
+            self.clipboard.copy("new local copy")
+            return result
+        self.clipboard.set_contents = copied_after_write
+        self.controller._set_clipboard(protocol.clipboard_msg("remote copy"))
+        self.assertEqual(self.controller._clipboard_stamp, write_stamp)
+        self.assertTrue(self.controller._note_clipboard())
+
     def test_a_clipboard_from_the_machine_just_let_go_is_taken_once(self):
         self.up()
         self.controller.set_redirecting(True)
@@ -631,6 +820,9 @@ class ClipboardTests(Base):
         # same machine waits for it.
         from core import owner as owner_module
         self.up()
+        self.controller._note_clipboard()
+        self.controller.owner.go(self.peer)
+        self.controller.owner.accept(self.peer, {"route": self.controller.owner.route})
         order = []
         post, send_input = self.link.post, self.link.send_input
         self.link.post = lambda message: order.append(message["type"]) or post(message)

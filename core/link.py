@@ -26,6 +26,7 @@ from core import protocol
 from core import receiver
 from core.i18n import tr
 from core.response_time import ResponseTime
+from core.link_timing import LinkTiming
 
 LOGGER = logging.getLogger("Beamer")
 
@@ -48,7 +49,8 @@ LOG_SECONDS = 60.0
 FOLLOW_AFTER_SECONDS = 10.0
 FOLLOW_EVERY_SECONDS = 30.0
 SEND_CHUNK = 65536
-_CAP_FOR = {protocol.MSG_GESTURE: "gestures", protocol.MSG_TEXT: "text", protocol.MSG_SETTINGS: "settings"}
+_CAP_FOR = {protocol.MSG_GESTURE: "gestures", protocol.MSG_TEXT: "text", protocol.MSG_SETTINGS: "settings",
+            protocol.MSG_IDENTIFY_SCREENS: "identify_screens"}
 
 
 class LinkEnded(Exception):
@@ -117,6 +119,8 @@ class OutboundLink:
         self._pending = None
         self._session = None
         self._outbox = collections.deque()
+        self._queued_at = {}
+        self._timing = LinkTiming("outbound")
         self._cond = threading.Condition(self._lock)
         self._seq = 0
         self.last_sent_seq = 0
@@ -505,6 +509,7 @@ class OutboundLink:
             self._last_rx = self._last_tx = self._last_progress = self._logged_at = now
             self._live = True
         name = self._name(entry)
+        self._timing.connected(sock)
         writer = threading.Thread(target=self._write, args=(sock, session), name="Beamer-link-writer", daemon=True)
         writer.start()
         message = (tr("Connected to {name} via the secure macOS 27 fallback").format(name=name) if self.via_tunnel
@@ -528,12 +533,14 @@ class OutboundLink:
                 reason, kind, self._drop_reason = self._drop_reason, "failed", None
             self._close()
             writer.join(timeout=1.0)
+            self._timing.flush(force=True, ping_ms=self.response_time_ms)
             self.down_since = self._clock()
             self._followed_at = None
             self._report(False, reason, kind)
 
     def _reset_link_state(self):
         self._outbox.clear()
+        self._queued_at.clear()
         self._queued_bytes = 0
         self._ping_queued = False
         self._writing = False
@@ -593,6 +600,7 @@ class OutboundLink:
                     raise LinkEnded(tr("{name} took too long to send one message").format(name=name), "stopped")
                 body = bytes(buffer[protocol.HEADER_SIZE:protocol.HEADER_SIZE + length])
                 del buffer[:protocol.HEADER_SIZE + length]
+                dispatch_at = time.monotonic()
                 plain = session.open_raw(body)
                 try:
                     if len(plain) > protocol.SMALL_MESSAGE_BYTES and not self._large_due(began or now):
@@ -600,6 +608,7 @@ class OutboundLink:
                     else:
                         self._deal(protocol.parse_message(plain), began or now)
                 finally:
+                    self._timing.add("read_dispatch", time.monotonic() - dispatch_at)
                     if length - 20 > protocol.SMALL_MESSAGE_BYTES:
                         self._end_ack_pause(self._clock())
                 began = now if buffer else None
@@ -610,6 +619,7 @@ class OutboundLink:
             if buffer and now - began > protocol.FRAME_COMPLETE_SECONDS:
                 raise LinkEnded(tr("{name} took too long to send one message").format(name=name), "stopped")
             self._tick(self._clock())
+            self._timing.flush(ping_ms=self.response_time_ms)
 
     def _large_due(self, began):
         if self._large is None:
@@ -709,7 +719,7 @@ class OutboundLink:
         ordered = sorted(sample for sample, _held in period)
         count = len(ordered)
         LOGGER.info(
-            "round trip to %s: %d samples, median %.1f ms, 95th percentile %.1f ms, largest %.1f ms, mean held_us %.0f",
+            "round trip to %s: %d samples, median %.1f ms, 95th percentile %.1f ms, largest %.1f ms, mean held_us %.0f (input ACK, outbound connection)",
             self.peer_name, count, ordered[count // 2] * 1000, ordered[math.ceil(count * 0.95) - 1] * 1000,
             ordered[-1] * 1000, sum(held for _sample, held in period) / count)
 
@@ -787,6 +797,7 @@ class OutboundLink:
                 data["seq"] = self._seq
                 message = {"type": message["type"], "data": data}
                 self.last_sent_seq = self._seq
+                self._queued_at[self._seq] = time.monotonic()
             self._outbox.append(message)
             self._cond.notify()
             return True
@@ -798,14 +809,20 @@ class OutboundLink:
                     while not self._outbox or self._stall.is_set():
                         if self._sock is not sock:
                             return
+                        waited_at = time.monotonic()
                         self._cond.wait(0.05)
+                        self._timing.add("writer_wait_lag", time.monotonic() - waited_at - 0.05)
                     if self._sock is not sock:
                         return
                     message = self._outbox.popleft()
+                    queued_at = self._queued_at.pop((message.get("data") or {}).get("seq"), None)
                     self._queued_bytes = max(0, self._queued_bytes - _weight(message))
                     self._writing = True
                     self._last_progress = self._clock()
                 seq = message.get("data", {}).get("seq")
+                write_at = time.monotonic()
+                if queued_at is not None:
+                    self._timing.add("input_queue", write_at - queued_at)
                 if seq is not None and message["type"] in protocol.INPUT_TYPES:
                     # Before the write: the peer's `ack` can reach the reader before this thread
                     # runs again, and it must find the seq already counted as sent.
@@ -831,6 +848,7 @@ class OutboundLink:
                     with self._cond:
                         self._ping_queued = False
                 self._last_tx = self._clock()
+                self._timing.add("write", time.monotonic() - write_at)
                 self._writing = False
         except (OSError, protocol.ProtocolError, ValueError) as exc:
             LOGGER.info("Sending to %s failed: %s", self.peer_name, exc)

@@ -16,6 +16,7 @@ import pages
 import theme
 from core.resistance_strip import MAX_RESISTANCE, resistance_x
 from core import ways as core_ways
+from core import identify_screens
 from core.i18n import N_, tr
 
 POSITION_WORDS = {"right of": N_("right of"), "left of": N_("left of"),
@@ -26,6 +27,22 @@ THIRD_WORDS = {"start": N_("start"), "middle": N_("middle"), "end": N_("end")}
 def _rect(frame):
     x, y, w, h = frame
     return ((x, y), (w, h))
+
+
+def _beside_display_numbers(frame, badges):
+    x, y, width, height = frame
+    spans = [(x, x + width)]
+    for badge in badges:
+        if badge.isHidden():
+            continue
+        box = badge.frame()
+        if y + height <= box.origin.y or y >= box.origin.y + box.size.height:
+            continue
+        left, right = box.origin.x - 4, box.origin.x + box.size.width + 4
+        spans = [(start, end) for a, b in spans
+                 for start, end in ((a, min(b, left)), (max(a, right), b)) if end > start]
+    left, right = max(spans, key=lambda span: span[1] - span[0]) if spans else (x, x + 1)
+    return left, y, right - left, height
 
 
 def _set_layer_frame_if_changed(layer, frame):
@@ -432,6 +449,7 @@ class AtlasCanvas(AppKit.NSView):
         self.layer().addSublayer_(self.focus_layer)
         self.layer_for_tile = {}
         self.display_layers = {}
+        self.display_number_layers = {}
         self.label_for_tile = {}
         self.state_for_tile = {}
         self.outcome_for_tile = {}
@@ -534,6 +552,8 @@ class AtlasCanvas(AppKit.NSView):
         for key in list(self.layer_for_tile):
             if key not in self.tiles:
                 for layer in self.display_layers.pop(key, []):
+                    layer.removeFromSuperlayer()
+                for layer in self.display_number_layers.pop(key, []):
                     layer.removeFromSuperlayer()
                 for layer in (self.layer_for_tile.pop(key), self.label_for_tile.pop(key),
                               self.state_for_tile.pop(key), self.outcome_for_tile.pop(key),
@@ -681,6 +701,8 @@ class AtlasCanvas(AppKit.NSView):
             check.setLineCap_(Quartz.kCALineCapRound)
             check.setLineJoin_(Quartz.kCALineJoinRound)
             check.setFrame_(((0, 0), (CYCLE_BOX, CYCLE_BOX)))
+            check.setAnchorPoint_((0, 0))
+            check.setPosition_((0, 0))
             check.setHidden_(True)
             cycle.addSublayer_(check)
             grip = Quartz.CAShapeLayer.layer()
@@ -708,7 +730,11 @@ class AtlasCanvas(AppKit.NSView):
 
     @staticmethod
     def _title_top(frame):
-        return frame[1] + (frame[3] - 20) / 2 if frame[3] < 56 else frame[1] + 10
+        if frame[3] < 32:
+            return frame[1] + 11
+        if frame[3] < 44:
+            return frame[1] + max(12, frame[3] - 21)
+        return frame[1] + (4 if frame[3] < 56 else 10)
 
     @objc.python_method
     def _shows_cycle(self, key):
@@ -716,10 +742,17 @@ class AtlasCanvas(AppKit.NSView):
 
     @objc.python_method
     def _title_rect(self, key, frame):
+        return _beside_display_numbers(self._title_without_numbers(key, frame),
+                                       self.display_number_layers.get(key, ()))
+
+    @objc.python_method
+    def _title_without_numbers(self, key, frame):
         """The name's text rect. Beside the shortcut-cycle tick the name stays centred on the tile while
         it fits the room left symmetric by the tick, else takes the room left of the tick; a tile 44 to
         56pt tall puts the name on its own row above the tick."""
         x, y, width, height = frame
+        if height < 32:
+            return x + 5, self._title_top(frame), max(1, width - 10), max(1, height - 12)
         if not self._shows_cycle(key):
             return x + 8, self._title_top(frame), max(1, width - 16), 20
         if 44 <= height < 56:
@@ -735,6 +768,8 @@ class AtlasCanvas(AppKit.NSView):
         """The shortcut-cycle tick: its own column at the right end of the name's line, or in the
         bottom-right corner of a tile 44 to 56pt tall, under the name."""
         x, y, width, height = frame
+        if height < 32:
+            return x + width - 15, y + 1, 10, 10
         if 44 <= height < 56:
             return x + width - 8 - CYCLE_BOX, y + height - 4 - CYCLE_BOX, CYCLE_BOX, CYCLE_BOX
         return x + width - 8 - CYCLE_BOX, AtlasCanvas._title_top(frame) + 10 - CYCLE_BOX / 2, CYCLE_BOX, CYCLE_BOX
@@ -860,7 +895,45 @@ class AtlasCanvas(AppKit.NSView):
                             (screen["w"] * scale_x, screen["h"] * scale_y)))
                 layer.setHidden_(False)
                 theme.tint(layer, background="well", border="edge")
+            numbered_frames = core_ways._display_frames(self.tiles[key])
+            numbers = identify_screens.display_numbers(self.tiles[key])
+            badges = self.display_number_layers.setdefault(key, [])
+            while len(badges) < len(numbered_frames):
+                badge = _text_layer(theme.TYPE["note"], "ink_2")
+                badge.setCornerRadius_(theme.RADIUS["field"])
+                theme.tint(badge, background="panel", foreground="ink_2")
+                self.layer().insertSublayer_below_(badge, title)
+                badges.append(badge)
+            for index, badge in enumerate(badges):
+                badge.setHidden_(index >= len(numbered_frames))
+                if index >= len(numbered_frames):
+                    continue
+                screen = numbered_frames[index]
+                display = screen.get("display") or "0"
+                badge.setString_(str(numbers[display]))
+                scale_x = frame[2] / self.tiles[key]["w"]
+                scale_y = frame[3] / self.tiles[key]["h"]
+                left = frame[0] + (screen["x"] - self.tiles[key]["x"]) * scale_x
+                top = frame[1] + (screen["y"] - self.tiles[key]["y"]) * scale_y
+                bottom = frame[1] + (screen["y"] + screen["h"] - self.tiles[key]["y"]) * scale_y
+                if frame[3] < 32:
+                    badge.setFontSize_(7)
+                    badge_frame = ((left + 5, top + 1), (12, 8))
+                elif frame[3] < 44:
+                    badge.setFontSize_(8)
+                    badge_frame = ((left + 5, top + 1), (14, 10))
+                elif frame[3] < 56:
+                    badge.setFontSize_(10)
+                    badge_frame = ((left + 5, bottom - 15), (16, 14))
+                else:
+                    badge.setFontSize_(theme.TYPE["note"])
+                    badge_frame = ((left + 5, bottom - 23), (20, 18))
+                _set_layer_frame_if_changed(badge, badge_frame)
             title.setString_(self.labels.get(key, tr("Machine · {id}").format(id=key[-6:])))
+            title_size = 10 if frame[3] < 32 else theme.TYPE["body"]
+            if title.fontSize() != title_size:
+                title.setFont_(theme.font(title_size, 600))
+                title.setFontSize_(title_size)
             title.setWrapped_(False)
             title.setTruncationMode_(Quartz.kCATruncationEnd)
             _set_layer_frame_if_changed(title, _rect(self._title_rect(key, frame)))
@@ -876,8 +949,8 @@ class AtlasCanvas(AppKit.NSView):
             status = self.tile_words.get(key) or status
             state_layer.setString_(status)
             state_layer.setAlignmentMode_(Quartz.kCAAlignmentLeft)
-            _set_layer_frame_if_changed(state_layer, ((frame[0] + 24, frame[1] + 35),
-                                                     (max(1, frame[2] - 32), 16)))
+            _set_layer_frame_if_changed(state_layer, _rect(_beside_display_numbers(
+                (frame[0] + 24, frame[1] + 35, max(1, frame[2] - 32), 16), badges)))
             state_layer.setHidden_(frame[3] < 72)
             theme.tint(state_layer, foreground="amber" if gap else "ink_3")
             crosses = status_info.get("crosses", is_own)
@@ -892,14 +965,15 @@ class AtlasCanvas(AppKit.NSView):
                 outcome = ""
             outcome_layer.setString_(tr("Set elsewhere") if elsewhere and not is_own else outcome)
             _set_layer_frame_if_changed(
-                outcome_layer, ((frame[0] + 8, frame[1] + frame[3] - 22),
-                                (max(1, frame[2] - 16), 14)))
+                outcome_layer, _rect(_beside_display_numbers(
+                    (frame[0] + 8, frame[1] + frame[3] - 22, max(1, frame[2] - 16), 14), badges)))
             outcome_layer.setHidden_(frame[3] < 56)
             theme.tint(outcome_layer, foreground="ink_3" if elsewhere else "signal" if outcome_kind == "crosses" else
                        "amber" if state in ("gap", "between", "set-elsewhere", "set_elsewhere", "overlap") else "ink_3")
             _set_layer_frame_if_changed(dot, ((frame[0] + 12, frame[1] + 40), (6, 6)))
             dot.setCornerRadius_(3)
-            dot.setHidden_(frame[3] < 72)
+            dot.setHidden_(frame[3] < 72 or any(
+                AppKit.NSIntersectsRect(dot.frame(), badge.frame()) for badge in badges if not badge.isHidden()))
             word = self.tile_words.get(key)
             theme.tint(dot, background=("signal" if word in (tr("Desk"), tr("Own")) else "ink_3") if word else
                        "ink_3" if key in self.older else "signal" if status_info.get("linked") else "ink_3")
@@ -908,7 +982,10 @@ class AtlasCanvas(AppKit.NSView):
             ticked = self.cycle.get(key, True) is True
             cycle_layer.setBorderWidth_(0 if ticked else 1)
             theme.tint(cycle_layer, background="ink_2" if ticked else "well", border="edge")
-            cycle_layer.sublayers()[0].setHidden_(not ticked)
+            check = cycle_layer.sublayers()[0]
+            check.setHidden_(not ticked)
+            tick_scale = self._cycle_box(frame)[2] / CYCLE_BOX
+            check.setAffineTransform_(Quartz.CGAffineTransformMakeScale(tick_scale, tick_scale))
             if self.display_layers.get(key):
                 z_position = max(layer.zPosition() for layer in self.display_layers[key]) + 1.0
                 for layer in (title, state_layer, outcome_layer, dot, cycle_layer):
@@ -1613,6 +1690,7 @@ class AtlasCanvas(AppKit.NSView):
                   self.dot_for_tile.get(key), self.cycle_for_tile.get(key),
                   self.resize_layers.get(key), self.focus_layer]
         layers.extend(self.display_layers.get(key, ()))
+        layers.extend(self.display_number_layers.get(key, ()))
         for layer in layers:
             if layer is not None:
                 layer.removeAllAnimations()

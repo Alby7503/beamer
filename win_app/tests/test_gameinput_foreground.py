@@ -60,7 +60,7 @@ class GameInputForegroundTests(unittest.TestCase):
         def restart(args, **kwargs):
             self.restarts.append((args, kwargs))
             self.user32.foreground = EXPLORER
-            return subprocess.CompletedProcess(args, 0, "", "")
+            return subprocess.CompletedProcess(args, 0, b"", b"")
 
         self.clock = [1000.0]
         patches = [
@@ -166,7 +166,7 @@ class GameInputForegroundTests(unittest.TestCase):
     def restarts_leave_gameinput_in_front(self):
         def restart(args, **kwargs):
             self.restarts.append((args, kwargs))
-            return subprocess.CompletedProcess(args, 0, "", "")
+            return subprocess.CompletedProcess(args, 0, b"", b"")
 
         input_injector.subprocess.run.side_effect = restart
 

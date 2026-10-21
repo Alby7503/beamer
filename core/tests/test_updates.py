@@ -10,9 +10,9 @@ def release(tag, **extra):
 
 
 class NewerReleaseTests(unittest.TestCase):
-    def test_a_patch_release_is_quiet_unless_its_notes_announce_it(self):
-        self.assertIsNone(updates.newer_release("1.4.0", release("v1.4.1", body="Small fixes.")))
-        self.assertIsNone(updates.newer_release("1.4.0", release("v1.4.1")))
+    def test_every_newer_stable_patch_is_offered(self):
+        self.assertIsNotNone(updates.newer_release("1.4.0", release("v1.4.1", body="Small fixes.")))
+        self.assertIsNotNone(updates.newer_release("1.4.0", release("v1.4.1")))
         self.assertIsNotNone(updates.newer_release("1.4.0", release("v1.4.1", body="Fixes a crash.\n<!-- announce -->")))
 
     def test_a_quiet_patch_still_offers_the_minor_version_someone_is_behind(self):
@@ -29,7 +29,9 @@ class NewerReleaseTests(unittest.TestCase):
 
     def test_versions_compare_as_numbers(self):
         self.assertIsNotNone(updates.newer_release("1.9.0", release("v1.10.0")))
-        self.assertIsNone(updates.newer_release("1.4", release("v1.4.1")))
+        self.assertIsNotNone(updates.newer_release("1.4", release("v1.4.1")))
+        self.assertIsNotNone(updates.newer_release("1.5.9", release("v1.5.10")))
+        self.assertIsNone(updates.newer_release("1.5.10", release("v1.5.9")))
 
     def test_drafts_prereleases_and_odd_tags_never_count(self):
         self.assertIsNone(updates.newer_release("1.3.3", release("v2.0.0", prerelease=True)))
@@ -78,6 +80,20 @@ class BetaTests(unittest.TestCase):
 
 
 class CheckerTests(unittest.TestCase):
+    def test_switching_off_during_a_request_discards_its_answer(self):
+        enabled = True
+        results = []
+
+        def fetcher():
+            nonlocal enabled
+            enabled = False
+            return json.dumps(release("v1.6.0")).encode()
+
+        checker = updates.Checker("1.5.9", lambda: enabled, results.append, fetcher=fetcher)
+        checker.check_once()
+        self.assertEqual(results, [])
+        self.assertIsNone(checker.latest)
+
     def make(self, payload=None, enabled=True, error=None):
         results = []
 
@@ -112,6 +128,19 @@ class CheckerTests(unittest.TestCase):
         checker.check_once()
         self.assertEqual(checker.latest[0], "1.4.0")
         self.assertEqual(len(results), 1)
+
+
+class NoticeTests(unittest.TestCase):
+    def test_dismissal_survives_a_new_check_but_not_a_newer_version(self):
+        found = ("1.5.10", "https://github.com/kalkman-code/beamer/releases/tag/v1.5.10")
+        self.assertEqual(updates.visible_notice(found, True, ""), found)
+        self.assertIsNone(updates.visible_notice(found, True, "1.5.10"))
+        newer = ("1.5.11", updates.RELEASES_PAGE)
+        self.assertEqual(updates.visible_notice(newer, True, "1.5.10"), newer)
+
+    def test_off_setting_hides_a_cached_result_and_none_stays_hidden(self):
+        self.assertIsNone(updates.visible_notice(("1.6.0", updates.RELEASES_PAGE), False, ""))
+        self.assertIsNone(updates.visible_notice(None, True, ""))
 
 
 if __name__ == "__main__":

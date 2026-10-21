@@ -31,6 +31,19 @@ def other_button(number):
 
 
 class TapTests(unittest.TestCase):
+    def test_mouse_only_keeps_typing_and_media_here_but_sends_mouse_buttons(self):
+        self.controller.apply_settings(replace(self.controller.cfg, mouse_only=True))
+        for event_type in (FakeQuartz.kCGEventKeyDown, FakeQuartz.kCGEventKeyUp):
+            event = key_event(KEY_A, "a")
+            self.assertIs(self.tap(event_type, event), event)
+        media = (8, (7 << 16) | 0x0A00)
+        self.assertIs(self.controller._handle_system_event(media), media)
+        self.assertEqual(self.sent(), [])
+        self.assertIsNone(self.tap(FakeQuartz.kCGEventLeftMouseDown, {}))
+        self.assertIsNone(self.tap(FakeQuartz.kCGEventLeftMouseUp, {}))
+        self.assertEqual(self.sent(), [(protocol.MSG_MOUSEDOWN, {"button": "left"}),
+                                       (protocol.MSG_MOUSEUP, {"button": "left"})])
+
     def setUp(self):
         self.controller = KVMController(
             replace(make_config(PAIRED_TOKEN), ignored_inputs=[ignored.key(KEY_F13), ignored.button("back"), ignored.media("volume_up")]),
@@ -149,6 +162,19 @@ class TapTests(unittest.TestCase):
 
 
 class SettingsTests(unittest.TestCase):
+    def test_mouse_only_defaults_off_and_survives_save_reload(self):
+        raw = settings_store.config_to_raw(settings_store.editable_default_config())
+        raw.pop("mouse_only")
+        self.assertFalse(settings_store.config_module.parse_config(raw).mouse_only)
+        with tempfile.TemporaryDirectory() as directory:
+            store = settings_store.SettingsStore(Path(directory) / "settings.json")
+            raw["mouse_only"] = True
+            store.save(raw)
+            self.assertTrue(store.load().mouse_only)
+            raw["mouse_only"] = "true"
+            with self.assertRaises(settings_store.SettingsError):
+                store.save(raw)
+
     def test_the_list_survives_a_save_and_a_load(self):
         with tempfile.TemporaryDirectory() as directory:
             store = settings_store.SettingsStore(Path(directory) / "config.json")

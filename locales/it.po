@@ -1618,6 +1618,14 @@ msgstr "Scorciatoia: {style} {key} ·"
 msgid "Idle"
 msgstr "Inattivo"
 
+#: mac_app/kvm_bridge_app.py win_app/kvm_bridge_win.py
+msgid "What's new"
+msgstr "Novità"
+
+#: mac_app/kvm_bridge_app.py win_app/kvm_bridge_win.py
+msgid "Dismiss"
+msgstr "Ignora"
+
 #: mac_app/kvm_bridge_app.py mac_app/machines.py mac_app/machines_panel.py mac_app/widgets.py win_app/crossing_ledger.py win_app/peers_view.py
 msgid "Mac"
 msgstr "Mac"
@@ -1661,6 +1669,10 @@ msgstr "Controlla aggiornamenti"
 #: mac_app/kvm_bridge_app.py win_app/kvm_bridge_win.py
 msgid "Download"
 msgstr "Scarica"
+
+#: mac_app/kvm_bridge_app.py win_app/kvm_bridge_win.py
+msgid "Mouse only"
+msgstr "Solo mouse"
 
 #: mac_app/kvm_bridge_app.py
 msgid "Reverse other machines' scrolling"
@@ -1707,6 +1719,14 @@ msgstr "Stesse vie su tutti i computer"
 #: mac_app/kvm_bridge_app.py win_app/kvm_bridge_win.py
 msgid "Set every machine's ways from this screen. Turning it on changes nothing until you do; each machine's own ways are kept."
 msgstr "Imposta le vie di tutti i computer da questa schermata. Attivarlo non cambia nulla finché non le modifichi; ciascun computer conserva le proprie vie."
+
+#: mac_app/kvm_bridge_app.py win_app/kvm_bridge_win.py
+msgid "Identify screens"
+msgstr "Identifica gli schermi"
+
+#: mac_app/kvm_bridge_app.py win_app/kvm_bridge_win.py
+msgid "Show these numbers on every linked machine's screens for 3 seconds."
+msgstr "Mostra questi numeri sugli schermi di tutti i computer collegati per 3 secondi."
 
 # New in 1.5.5: awaiting Lorenzo's check
 #: mac_app/kvm_bridge_app.py
@@ -1970,6 +1990,10 @@ msgstr "Nessuno"
 #: mac_app/kvm_bridge_app.py win_app/kvm_bridge_win.py
 msgid "Appearance"
 msgstr "Aspetto della finestra"
+
+#: mac_app/kvm_bridge_app.py win_app/kvm_bridge_win.py
+msgid "Keyboard sharing"
+msgstr "Condivisione della tastiera"
 
 #: mac_app/kvm_bridge_app.py win_app/kvm_bridge_win.py
 msgid "Another machine's pointer here"
@@ -2263,6 +2287,10 @@ msgstr "Questa finestra"
 msgid "System follows your Mac's light or dark setting."
 msgstr "Sistema segue l'impostazione chiara o scura del Mac."
 
+#: mac_app/kvm_bridge_app.py win_app/kvm_bridge_win.py
+msgid "Keep this machine's keyboard here. Pointer and clipboard sharing stay on."
+msgstr "Mantieni la tastiera su questo computer. Il puntatore e gli appunti restano condivisi."
+
 #: mac_app/kvm_bridge_app.py
 msgid "Pointer speed for another machine's mouse or trackpad while it drives this Mac."
 msgstr "Velocità del puntatore per il mouse o il trackpad di un altro computer mentre controlla questo Mac."
@@ -2506,6 +2534,11 @@ msgstr "Disattivato"
 #, python-brace-format
 msgid "Download Beamer {version}"
 msgstr "Scarica Beamer {version}"
+
+#: mac_app/kvm_bridge_app.py win_app/kvm_bridge_win.py
+#, python-brace-format
+msgid "Beamer {version} is available."
+msgstr "Beamer {version} è disponibile."
 
 #. {reason} is the system's reason for refusing the login item.
 #: mac_app/kvm_bridge_app.py
@@ -4224,6 +4257,10 @@ msgstr "Windows Firewall consente agli altri tuoi computer di raggiungere Beamer
 msgid "Send input to another machine"
 msgstr "Invia input a un altro computer"
 
+#: win_app/identify_overlay.py
+msgid "Beamer — Identify screens"
+msgstr "Beamer — Identifica gli schermi"
+
 #: win_app/kvm_bridge_win.py
 msgid "Beamer's website"
 msgstr "Sito di Beamer"
@@ -4610,6 +4647,10 @@ msgstr "Se disattivato, chiudere la finestra chiude Beamer. Apri di nuovo Beamer
 #: win_app/kvm_bridge_win.py
 msgid "This desktop has no system tray, so Beamer's window is all there is: closing it quits Beamer."
 msgstr "Questo desktop non ha un'area di notifica, quindi la finestra di Beamer è tutto ciò che c'è: chiuderla chiude Beamer."
+
+#: win_app/kvm_bridge_win.py
+msgid "Update through your software store."
+msgstr "Aggiorna tramite il tuo gestore software."
 
 #: win_app/kvm_bridge_win.py
 msgid "Starts elevated at sign-in without a UAC prompt, so Beamer can send input to administrator apps."

@@ -15,6 +15,7 @@ import re
 import subprocess
 import sys
 import unittest
+from unittest import mock
 from pathlib import Path
 
 
@@ -52,6 +53,7 @@ NOT_SHOWN = {
     "dispatch", "ExecMethod_", "Methods_", "persistentDomainForName_",
     "beginActivityWithOptions_reason_", "asset_path", "CreateMutexW", "QKeySequence",
     "_turn_off_clashes", "exception", "_force_local", "stringForKey_", "open_dbus_connection", "update",
+    "require_version", "_log_helper_failure",
 }
 
 
@@ -89,6 +91,10 @@ def _prose(node) -> bool:
 
 def _not_shown(node: ast.Call, parent, parents, exception_classes) -> bool:
     name = _name(node.func)
+    if name in {"insert", "remove"} and _owner(node.func) == "environment":
+        return bool(node.args and isinstance(node.args[0], ast.Constant)
+                    and isinstance(node.args[0].value, str)
+                    and re.fullmatch(r"[A-Z][A-Z0-9_]*", node.args[0].value))
     if name == "__init__" and name in NOT_SHOWN:
         ancestor = parent
         while ancestor is not None and not isinstance(ancestor, ast.ClassDef):
@@ -115,6 +121,9 @@ def hard_coded(path: Path) -> list[str]:
         if not isinstance(node, ast.Call) or _not_shown(node, parents.get(node), parents, exception_classes):
             continue
         for arg in list(node.args) + [keyword.value for keyword in node.keywords]:
+            # Win32's class name is a system identifier; the following title remains visible text.
+            if _name(node.func) == "CreateWindowExW" and len(node.args) > 1 and arg is node.args[1]:
+                continue
             if _prose(arg):
                 found.append(f"{path.relative_to(ROOT).as_posix()}:{arg.lineno}: {_name(node.func)}({ast.unparse(arg)[:70]})")
     return found
@@ -171,6 +180,13 @@ def import_time_tr(path: Path) -> list[str]:
 
 
 class I18nCoverageTests(unittest.TestCase):
+    def test_win32_window_class_is_an_identifier_but_its_title_is_visible(self):
+        path = ROOT / "win_app/clipboard_win.py"
+        source = 'win32.CreateWindowExW(0, "STATIC", "Visible title", 0)'
+        with mock.patch.object(Path, "read_text", return_value=source):
+            found = hard_coded(path)
+        self.assertEqual(found, ["win_app/clipboard_win.py:1: CreateWindowExW('Visible title')"])
+
     def test_no_hard_coded_user_visible_strings(self):
         found = [line for path in source_files() for line in hard_coded(path)]
         self.assertEqual(found, [], "mark these with tr() or N_() from core.i18n:\n" + "\n".join(found))

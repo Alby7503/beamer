@@ -49,6 +49,7 @@ class FakePasteboard:
     def clearContents(self):
         self.cleared += 1
         self.count += 1
+        return self.count
 
     def setString_forType_(self, text, kind):
         self.written.append((kind, text))
@@ -143,6 +144,35 @@ class ChangedContentsTests(unittest.TestCase):
         finally:
             clipboard_mac.get_contents = real
         self.assertEqual(clipboard_mac.changed_contents()[0], "copied")
+
+    def test_image_failure_keeps_the_text_representation(self):
+        def failed_image(kind):
+            raise RuntimeError("image provider failed")
+        self.board.dataForType_ = failed_image
+        self.assertEqual(clipboard_mac.get_contents(), ("copied", None))
+
+    def test_copy_during_read_retries_the_newest_stable_snapshot(self):
+        original = self.board.stringForType_
+        def read(kind):
+            old = original(kind)
+            self.board.count += 1
+            self.board.string = "latest"
+            self.board.stringForType_ = original
+            return old
+        self.board.stringForType_ = read
+        self.assertEqual(clipboard_mac.get_contents(), ("latest", None))
+
+    def test_local_copy_during_peer_write_is_not_marked_synchronised(self):
+        original = self.board.setString_forType_
+        def write(text, kind):
+            wrote = original(text, kind)
+            self.board.count += 1
+            self.board.string = "local copy"
+            return wrote
+        self.board.setString_forType_ = write
+        self.assertTrue(clipboard_mac.set_contents("peer", None))
+        self.assertNotEqual(clipboard_mac.write_stamp(), self.board.count)
+        self.assertEqual(clipboard_mac.changed_contents(), ("local copy", None))
 
     def test_a_new_link_sends_it_again(self):
         clipboard_mac.changed_contents()

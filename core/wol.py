@@ -12,6 +12,8 @@ import socket
 import subprocess
 import sys
 
+from core import windows_tools
+
 WOL_PORT = 9
 # Sleep answers in a few seconds; hibernate and a cold boot take most of a minute. Past this
 # the other machine is reported as not woken rather than the switch waiting forever.
@@ -54,14 +56,13 @@ def lookup_mac(host: str):
     windows = sys.platform == "win32"
     try:
         ip = socket.gethostbyname(host)
-        completed = subprocess.run(
-            ["arp", "-a", ip] if windows else ["arp", "-n", ip],
-            capture_output=True,
-            text=True,
-            timeout=3.0,
-            check=False,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0) if windows else 0,
-        )
+        if windows:
+            completed = windows_tools.run(["arp", "-a", ip], timeout=3.0)
+        else:
+            completed = subprocess.run(
+                ["arp", "-n", ip], capture_output=True, text=True, timeout=3.0, check=False,
+                creationflags=0,
+            )
     except (OSError, subprocess.SubprocessError):
         return None
     return mac_from_arp_output(completed.stdout, ip)

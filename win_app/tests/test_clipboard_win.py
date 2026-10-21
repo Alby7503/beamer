@@ -192,8 +192,18 @@ class FakeWin32:
         self.mem32 = mem32
         self.formats = dict(formats or {})
         self.emptied = 0
+        self.open_owner = None
+        self.destroyed = []
+
+    def CreateWindowExW(self, *args):
+        return 123
+
+    def DestroyWindow(self, owner):
+        self.destroyed.append(owner)
+        return 1
 
     def OpenClipboard(self, owner):
+        self.open_owner = owner
         return 1
 
     def CloseClipboard(self):
@@ -261,6 +271,62 @@ class ClipboardOrchestrationTests(unittest.TestCase):
         self.assertEqual(self.mem32.contents(win32.formats[CF_UNICODETEXT]), "hi".encode("utf-16-le") + b"\x00\x00")
         self.assertEqual(self.mem32.contents(win32.formats[CF_DIB]), bgra_to_dib(2, 2, BGRA))
         self.assertEqual(self.mem32.freed, [])
+
+    def test_write_uses_an_owned_message_window_even_when_the_panel_is_hidden(self):
+        win32 = FakeWin32(self.mem32)
+        original = win32.SetClipboardData
+        win32.SetClipboardData = lambda kind, handle: original(kind, handle) if win32.open_owner else 0
+        self.assertTrue(clipboard_win._set_contents(win32, self.mem32, "hidden", None))
+        self.assertEqual(win32.destroyed, [123])
+
+    def test_failed_empty_does_not_write_into_another_apps_clipboard(self):
+        win32 = FakeWin32(self.mem32)
+        win32.EmptyClipboard = lambda: 0
+        self.assertFalse(clipboard_win._set_contents(win32, self.mem32, "new", None))
+        self.assertEqual(win32.formats, {})
+
+    def test_image_read_failure_does_not_drop_valid_text(self):
+        win32 = FakeWin32(self.mem32, {CF_UNICODETEXT: self.mem32.handle_for("copied")})
+        original = win32.GetClipboardData
+        def read(kind):
+            if kind == CF_DIB:
+                raise OSError("image provider failed")
+            return original(kind)
+        win32.GetClipboardData = read
+        self.assertEqual(clipboard_win._get_contents(win32, self.mem32), ("copied", None))
+
+    def test_copy_after_close_is_not_marked_as_written_from_peer(self):
+        win32 = FakeWin32(self.mem32)
+        win32.sequence = 10
+        win32.GetClipboardSequenceNumber = lambda: win32.sequence
+        def close():
+            win32.sequence += 1
+            return 1
+        win32.CloseClipboard = close
+        with mock.patch.multiple(clipboard_win, _IS_WINDOWS=True, user32=win32, kernel32=self.mem32, _synced_sequence=None):
+            self.assertTrue(clipboard_win.set_contents("peer", None))
+            self.assertEqual(clipboard_win._synced_sequence, 10)
+
+    def test_contention_releases_the_owner_window_and_the_next_attempt_succeeds(self):
+        win32 = FakeWin32(self.mem32)
+        opened = win32.OpenClipboard
+        calls = []
+        def contended(owner):
+            calls.append(owner)
+            return 0 if len(calls) <= 5 else opened(owner)
+        win32.OpenClipboard = contended
+        self.assertFalse(clipboard_win._set_contents(win32, self.mem32, "copy", None, sleep=lambda _: None))
+        self.assertTrue(clipboard_win._set_contents(win32, self.mem32, "copy", None, sleep=lambda _: None))
+        self.assertEqual(win32.destroyed, [123, 123])
+        self.assertEqual(self.mem32.contents(win32.formats[CF_UNICODETEXT]), b"c\x00o\x00p\x00y\x00\x00\x00")
+
+    def test_rapid_large_unicode_writes_keep_the_latest_text(self):
+        win32 = FakeWin32(self.mem32)
+        copies = [f"copy {n}: café 日本語 \U0001d11e" for n in range(200)]
+        copies.append("\U0001d11e" * (protocol.CLIPBOARD_MAX_BYTES // 4))
+        for text in copies:
+            self.assertTrue(clipboard_win._set_contents(win32, self.mem32, text, None))
+            self.assertEqual(clipboard_win._get_contents(win32, self.mem32), (text, None))
 
     def test_set_contents_writes_windows_line_endings(self):
         win32 = FakeWin32(self.mem32)

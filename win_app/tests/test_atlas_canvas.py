@@ -130,15 +130,21 @@ class AtlasCanvasTests(unittest.TestCase):
             with patch.object(diagram, "QPainter", RecordingPainter):
                 canvas.render(image)
             tile = canvas.tile_rect("home")
+            badges = [box for peer, _display, _number, box in canvas.display_number_rects if peer == "home"]
+            self.assertEqual(len(badges), len(displays))
+            for badge in badges:
+                self.assertIn(badge, rounded_rects)
             return [rect for rect in rounded_rects
                     if rect.left() >= tile.left() + 1 and rect.top() >= tile.top() + 1
-                    and rect.right() <= tile.right() - 1 and rect.bottom() <= tile.bottom() - 1]
+                    and rect.right() <= tile.right() - 1 and rect.bottom() <= tile.bottom() - 1
+                    and rect not in badges]
 
         one = {"main": {"x": 0, "y": 0, "w": 1728, "h": 1117}}
         two = {"left": {"x": 0, "y": 0, "w": 1728, "h": 1117},
                "right": {"x": 1728, "y": 0, "w": 1728, "h": 1117}}
         self.assertEqual(internal_frames(one), [])
-        self.assertEqual(len(internal_frames(two)), 2)
+        self.assertCountEqual(internal_frames(two),
+                              [canvas.display_rect("home", display).adjusted(2, 2, -2, -2) for display in two])
 
     def _wrapping_canvas(self, **states):
         from PySide6.QtCore import Qt

@@ -7,6 +7,8 @@ current layout group, read through XKB (xkb_x11), with Shift pressed or let go a
 layout needs; when this layout has no key for it, on its US place under a chord or for a letter of
 another script, as input_injector._by_place; otherwise on a spare keycode mapped to it, which stays
 mapped so a second press needs no remap (every remap makes each client reread the keymap).
+Text input tries AltGr levels and canonical dead-accent sequences before remapping. Key input
+retains a held key on X11; Wayland uses those sequences because its keymap cannot be changed.
 
 Auto-repeat is the server's, as for a key held on this machine's own keyboard: the server repeats
 a key XTest holds (measured on Xvfb, 01-10-2026), so the peer's repeats of a held key are not
@@ -28,6 +30,7 @@ import logging
 import os
 import threading
 import time
+import unicodedata
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
@@ -54,6 +57,13 @@ REMAP_PAUSE_SECONDS = 0.05
 
 PRESS, RELEASE, MAP, NO_REPEAT, REPEAT = "press", "release", "map", "no_repeat", "repeat"
 
+# XKB dead-key symbols for canonical accents accepted by desktop compose tables.
+DEAD_ACCENTS = {"\u0300": 0xfe50, "\u0301": 0xfe51, "\u0302": 0xfe52,
+                "\u0303": 0xfe53, "\u0304": 0xfe54, "\u0306": 0xfe55,
+                "\u0307": 0xfe56, "\u0308": 0xfe57, "\u030a": 0xfe58,
+                "\u030b": 0xfe59, "\u030c": 0xfe5a, "\u0327": 0xfe5b,
+                "\u0328": 0xfe5c}
+
 
 def repeat_state_file() -> Path:
     """Where the keycodes whose auto-repeat this module turned off are written: it is the X
@@ -77,10 +87,13 @@ class Layout:
     key at a US place types there. `mapped` holds the spare keycodes this module mapped since the
     keymap was last read."""
 
+    can_remap = True
+
     def __init__(self, keymap) -> None:
         self.keymap = keymap
         self.mapped: Dict[int, int] = {}
         self._found: Dict[Tuple[int, int], Dict[str, Tuple[int, bool]]] = {}
+        self._strokes: dict = {}
 
     def find(self, character: str, group: int, locks: int) -> Optional[Tuple[int, bool]]:
         """(keycode, shift) for the key typing `character`, without Shift preferred, or None."""
@@ -126,6 +139,42 @@ class Layout:
     def map(self, keycode: int, keysym: int) -> None:
         self.mapped[keycode] = keysym
         self._found.clear()
+        self._strokes.clear()
+
+    def sequence(self, character: str, group: int, locks: int) -> Optional[list]:
+        """Layout strokes for an AltGr character or a canonical dead-accent composition."""
+        table = self._strokes.get((group, locks))
+        if table is None:
+            keymap = self.keymap
+            levels = [(0, ()), (SHIFT_MASK, (SHIFT_L,))]
+            modifier_mask = getattr(keymap, "modifier_mask", None)
+            if modifier_mask is not None:
+                for code in range(keymap.min_keycode, keymap.max_keycode + 1):
+                    if keymap.keysym(code, 0, group) == 0xfe03:  # ISO_Level3_Shift
+                        mask = modifier_mask(code)
+                        if mask:
+                            levels += [(mask, (code,)), (mask | SHIFT_MASK, (code, SHIFT_L))]
+                            break
+            table = {}
+            for mask, modifiers in levels:
+                for code in range(keymap.min_keycode, keymap.max_keycode + 1):
+                    symbol = keymap.keysym(code, locks | mask, group)
+                    if symbol:
+                        table.setdefault(symbol, (code, modifiers))
+                        text = keymap.text(symbol)
+                        if text:
+                            table.setdefault(text, (code, modifiers))
+            self._strokes[(group, locks)] = table
+        direct = table.get(character)
+        if direct is not None:
+            return [direct]
+        decomposed = unicodedata.normalize("NFD", character)
+        if len(decomposed) == 2 and decomposed[1] in DEAD_ACCENTS:
+            dead = table.get(DEAD_ACCENTS[decomposed[1]])
+            base = table.get(decomposed[0])
+            if dead is not None and base is not None:
+                return [dead, base]
+        return None
 
 
 class KeyState:
@@ -137,6 +186,7 @@ class KeyState:
         # A held character: its keycode, and for one typed with Shift changed around it, whether
         # it needs Shift, for each repeat to be typed again (None when the server repeats it).
         self.chars_down: Dict[str, Tuple[int, Optional[bool]]] = {}
+        self.taps_down: Set[str] = set()
         self.spares: Dict[int, int] = {}  # keysym to keycode, least recently used first
 
     def held_shift(self) -> List[int]:
@@ -180,6 +230,19 @@ def _shift_around(keycode: int, shift: bool, state: KeyState) -> list:
     return [(PRESS, keycode)]
 
 
+def _tap_strokes(strokes: list, state: KeyState) -> Optional[list]:
+    held_keys = state.named_down | {code for code, _shift in state.chars_down.values()}
+    if any(code in held_keys for code, _modifiers in strokes):
+        return None
+    held = [NAME_TO_CODE[name] + KEYCODE_OFFSET for name in sorted(state.mods_down)]
+    steps = [(RELEASE, code) for code in held]
+    for code, modifiers in strokes:
+        steps += [(PRESS, mod) for mod in modifiers]
+        steps += [(PRESS, code), (RELEASE, code)]
+        steps += [(RELEASE, mod) for mod in reversed(modifiers)]
+    return steps + [(PRESS, code) for code in held]
+
+
 _warned: Set[str] = set()
 
 
@@ -216,6 +279,18 @@ def plan_key(name: str, down: bool, us: Optional[str], state: KeyState, layout: 
         _warn_once("Unknown key name ignored: %r", name)
         return []
     character = name
+    chord = bool(state.mods_down & CHORD_KEYS)
+    if character in state.taps_down:
+        if not down:
+            state.taps_down.discard(character)
+            return []
+        if not chord:
+            strokes = layout.sequence(character, group, locks)
+            steps = _tap_strokes(strokes, state) if strokes is not None else None
+            if steps is None:
+                _warn_once("Current keyboard state cannot repeat %r", character)
+            return steps or []
+        state.taps_down.discard(character)
     held = state.chars_down.get(character)
     if not down:
         if held is None:
@@ -228,7 +303,6 @@ def plan_key(name: str, down: bool, us: Optional[str], state: KeyState, layout: 
         keycode, shift = held
         # Shift is worked out again: the peer may have pressed or let go of its own since.
         return [] if shift is None else [(RELEASE, keycode)] + _shift_around(keycode, shift, state)
-    chord = bool(state.mods_down & CHORD_KEYS)
     found = layout.find(character, group, locks)
     if found is not None:
         keycode, shift = found
@@ -243,6 +317,11 @@ def plan_key(name: str, down: bool, us: Optional[str], state: KeyState, layout: 
     if place is not None:
         state.chars_down[character] = (place[0], None)
         return [(PRESS, place[0])]
+    strokes = layout.sequence(character, group, locks) if not chord and not layout.can_remap else None
+    steps = _tap_strokes(strokes, state) if strokes is not None else None
+    if steps is not None:
+        state.taps_down.add(character)
+        return steps
     spare = _spare_steps(character, layout, state)
     if spare is None:
         _warn_once("No spare key left to type %r", character)
@@ -265,6 +344,11 @@ def plan_text(text: str, state: KeyState, layout: Layout, group: int, locks: int
             keycode, shift = found
             steps += _shift_around(keycode, shift, bare)
         else:
+            strokes = layout.sequence(character, group, locks)
+            typed = _tap_strokes(strokes, bare) if strokes is not None else None
+            if typed is not None:
+                steps += typed
+                continue
             spare = _spare_steps(character, layout, bare)
             if spare is None:
                 _warn_once("No spare key left to type %r", character)
@@ -570,5 +654,6 @@ def release_all() -> None:
     _state.mods_down.clear()
     _state.named_down.clear()
     _state.chars_down.clear()
+    _state.taps_down.clear()
     _buttons_down.clear()
     _scroll_carry[0] = _scroll_carry[1] = 0.0

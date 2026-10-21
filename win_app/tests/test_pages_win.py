@@ -367,6 +367,29 @@ class CrossingPageTest(unittest.TestCase):
         choice._buttons["quarter"].click()
         self.assertEqual(app_config.load_config(self.path).frame_rate, "quarter")
 
+    def test_mouse_only_switch_saves_applies_and_reflects_without_resaving(self):
+        from unittest import mock
+
+        self.assertFalse(self.page.mouse_only_switch.isChecked())
+        self.page.mouse_only_switch.click()
+        self.assertTrue(app_config.load_config(self.path).mouse_only)
+        self.assertTrue(self.page.sender._ignore_gate.mouse_only)
+        config = app_config.load_config(self.path)
+        config.mouse_only = False
+        with mock.patch.object(self.page, "_persist") as persist:
+            self.page._reflect_config(config)
+            self.assertFalse(self.page.mouse_only_switch.isChecked())
+            persist.assert_not_called()
+
+    def test_mouse_only_switch_restores_state_if_saving_fails(self):
+        from unittest import mock
+
+        with mock.patch.object(self.page, "_persist", return_value=False):
+            self.page.mouse_only_switch.click()
+        self.assertFalse(self.page._config.mouse_only)
+        self.assertFalse(self.page.mouse_only_switch.isChecked())
+        self.assertFalse(self.page.sender._ignore_gate.mouse_only)
+
     def test_fixture_releases_window_before_the_next_case(self):
         from shiboken6 import isValid
 

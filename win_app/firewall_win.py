@@ -15,7 +15,7 @@ import subprocess
 import sys
 from typing import Iterable, Optional, Sequence
 
-from core import protocol
+from core import protocol, windows_tools
 from core.i18n import tr
 
 LOGGER = logging.getLogger(__name__)
@@ -278,15 +278,14 @@ def _powershell(script: str, timeout: float = 60.0) -> str:
     startupinfo = subprocess.STARTUPINFO()
     startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
     startupinfo.wShowWindow = subprocess.SW_HIDE
-    completed = subprocess.run(
+    completed = windows_tools.run(
         [exe, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script],
-        capture_output=True,
+        encoding="utf-8",
         timeout=timeout,
-        creationflags=subprocess.CREATE_NO_WINDOW,
         startupinfo=startupinfo,
     )
-    stdout = completed.stdout.decode("utf-8", errors="replace")
-    stderr = completed.stderr.decode("utf-8", errors="replace").strip()
+    stdout = completed.stdout
+    stderr = completed.stderr.strip()
     if completed.returncode != 0:
         raise RuntimeError(stderr.splitlines()[0] if stderr else f"PowerShell exited with code {completed.returncode}")
     return stdout

@@ -139,6 +139,7 @@ class LinkSender:
         desktop=None,
         clipboard=None,
         links=None,
+        mouse_only_supported=True,
         is_local=is_this_machine,
         clock=time.monotonic,
         wake_sender=wol.send_magic_packet,
@@ -155,6 +156,7 @@ class LinkSender:
         self._arrival_callback = arrival_callback
         self._desktop = desktop
         self._clipboard = clipboard
+        self._mouse_only_supported = mouse_only_supported
         self._is_local = is_local
         self._clock = clock
         self._wake_sender = wake_sender
@@ -193,6 +195,7 @@ class LinkSender:
         self._display_map = {}
         self._monitors_at = 0.0
         self._clipboard_stamp = None
+        self._clipboard_written_stamp = None
         # The machine this PC's input last landed on, as an id text, for the shortcut's choice.
         self._last_on: Optional[str] = None
         self._jump_modifiers = set()
@@ -238,6 +241,7 @@ class LinkSender:
         self.announce: Callable[[bytes], list] = lambda peer: []
         self.arrangement_callback: Optional[Callable] = None
         self.settings_callback: Optional[Callable] = None
+        self.identify_callback: Optional[Callable] = None
         self.paired_callback: Optional[Callable] = None
         self.link_callback: Optional[Callable[[bytes, bool], None]] = None
 
@@ -419,7 +423,8 @@ class LinkSender:
     def update_config(self, config) -> None:
         with self._config_lock:
             self._config = config
-        self._ignore_gate.configure(getattr(config, "ignored_inputs", None) or ())
+        self._ignore_gate.configure(getattr(config, "ignored_inputs", None) or (),
+                                    mouse_only=self._mouse_only_supported and getattr(config, "mouse_only", False))
         own = protocol.read_id(getattr(config, "machine_id", "")) if config is not None else None
         with self._lock:
             if own is not None and own != self._own_id:
@@ -502,15 +507,19 @@ class LinkSender:
             self.go(target)
         return True
 
-    def on_dead_key(self, vk: Optional[int] = None) -> bool:
+    def on_dead_key(self, vk: Optional[int] = None, down: bool = True) -> bool:
         """Swallow a dead key only while its live peer owns this PC's input."""
+        if not down:
+            if vk is not None:
+                self._ignore_gate.keeps(ignored.key(vk), False)
+            return True
         owner = self._owner
         if owner is None or not owner.away:
             return False
         if not self._live():
             self._lost()
             return False
-        if vk is not None and self._ignore_gate.keeps(ignored.key(vk), True):
+        if self._ignore_gate.keeps_tap(ignored.key(vk) if vk is not None else "key:dead"):
             return False
         return True
 
@@ -534,12 +543,9 @@ class LinkSender:
             if not self._live():
                 self._lost()
                 return False
-            if vk is not None:
-                entry = ignored.key(vk)
-                kept = self._ignore_gate.keeps(entry, True)
-                self._ignore_gate.keeps(entry, False)
-                if kept:
-                    return False
+            entry = ignored.key(vk) if vk is not None else f"key:{name}"
+            if self._ignore_gate.keeps_tap(entry):
+                return False
             if not self._input_tap(name):
                 return False
             self._input_method_tap_releases.add(held)
@@ -552,25 +558,23 @@ class LinkSender:
             data = self._keys_down.pop(held, None) or self._key_data(name, us)
         if self._shake_detector is not None:
             self._shake_detector.held(self._clock(), bool(self._keys_down or self._buttons_held))
+        if vk in self._intent_windows_up or vk in self._intent_keys_up:
+            if not down:
+                self._intent_windows_up.discard(vk)
+                self._intent_keys_up.discard(vk)
+                self._ignore_gate.keeps(ignored.key(vk), False)
+            return True
         if owner.away:
             if not self._live():
                 self._lost()
                 return False
-            if vk is not None and self._ignore_gate.keeps(ignored.key(vk), down):
+            if self._ignore_gate.keeps(ignored.key(vk) if vk is not None else f"key:{name}", down):
                 return False
-        elif vk is not None and not down:
-            self._ignore_gate.keeps(ignored.key(vk), False)
+        elif not down:
+            self._ignore_gate.keeps(ignored.key(vk) if vk is not None else f"key:{name}", False)
         target = self._peers.get(owner.on) or {}
         to_mac = not sys.platform.startswith("linux") and target.get("platform") == "macos"
         to_linux = not sys.platform.startswith("linux") and target.get("platform") == "linux"
-        if vk in self._intent_windows_up:
-            if not down:
-                self._intent_windows_up.discard(vk)
-            return True
-        if vk in self._intent_keys_up:
-            if not down:
-                self._intent_keys_up.discard(vk)
-            return True
         if vk in (0x5B, 0x5C) and (to_mac or to_linux):
             if down:
                 self._keys_down[held] = self._key_data(name, us)
@@ -581,12 +585,19 @@ class LinkSender:
                 self._input({"type": protocol.MSG_KEYDOWN, "data": dict(data)})
                 return self._input({"type": protocol.MSG_KEYUP, "data": dict(data)})
         active_windows_key = self._pending_windows_key
+        remote_keys = frozenset()
+        if down and (to_mac or to_linux):
+            with self._lock:
+                remote_keys = owner.pressed_keys
         if active_windows_key is None and to_mac:
-            active_windows_key = next((key for key in (0x5B, 0x5C) if key in self._keys_down), None)
+            active_windows_key = next((key for key in (0x5B, 0x5C) if key in self._keys_down
+                                       and self._keys_down[key]["key"] in remote_keys), None)
+        other_modifiers = {0x10, 0xA0, 0xA1, 0x11, 0xA2, 0xA3, 0x12, 0xA4, 0xA5, 0x5B, 0x5C}
+        other_modifiers.discard(active_windows_key)
+        remote_modifiers = any(self._keys_down[key]["key"] in remote_keys
+                               for key in other_modifiers.intersection(self._keys_down))
         if down and to_mac and active_windows_key is not None and vk is not None:
-            other_modifiers = {0x10, 0xA0, 0xA1, 0x11, 0xA2, 0xA3, 0x12, 0xA4, 0xA5, 0x5C}
-            other_modifiers.discard(active_windows_key)
-            intent = None if other_modifiers.intersection(self._keys_down) else special_keys.windows_shortcut_intent(name)
+            intent = None if remote_modifiers else special_keys.windows_shortcut_intent(name)
             if intent is not None:
                 windows_key = active_windows_key
                 was_pending = self._pending_windows_key == windows_key
@@ -607,7 +618,7 @@ class LinkSender:
             if pending_data is not None:
                 self._input({"type": protocol.MSG_KEYDOWN, "data": dict(pending_data)})
         if down and to_linux and self._pending_windows_key is not None and vk is not None:
-            intent = {"s": "spotlight", "h": "", "n": ""}.get(name.lower())
+            intent = None if remote_modifiers else {"s": "spotlight", "h": "", "n": ""}.get(name.lower())
             if intent is not None:
                 windows_key = self._pending_windows_key
                 self._pending_windows_key = None
@@ -625,8 +636,12 @@ class LinkSender:
                 self._input({"type": protocol.MSG_KEYDOWN, "data": dict(pending_data)})
         return self._input({"type": protocol.MSG_KEYDOWN if down else protocol.MSG_KEYUP, "data": dict(data)})
 
-    def on_text(self, text: str, vk: Optional[int] = None) -> bool:
+    def on_text(self, text: str, vk: Optional[int] = None, down: bool = True) -> bool:
         """Sends a composed key sequence as text when this PC's input is away."""
+        if not down:
+            if vk is not None:
+                self._ignore_gate.keeps(ignored.key(vk), False)
+            return True
         owner = self._owner
         if owner is None:
             return False
@@ -634,7 +649,8 @@ class LinkSender:
             if not self._live():
                 self._lost()
                 return False
-            elif vk is not None and self._ignore_gate.keeps(ignored.key(vk), True):
+            elif (self._ignore_gate.keeps(ignored.key(vk), True) if vk is not None
+                  else self._ignore_gate.keeps_tap("key:text")):
                 return False
         actions = []
         with self._lock:
@@ -1009,7 +1025,7 @@ class LinkSender:
             if read is not None:
                 with self._lock:
                     self._note_clipboard()
-                    actions = self._owner.accept(peer, read)
+                    actions = self._owner.accept(peer, read) + self._owner.clipboard_pending()
                     self._queue(actions)
                 self._report(actions)
         elif kind == protocol.MSG_REFUSE:
@@ -1043,6 +1059,10 @@ class LinkSender:
         elif kind == protocol.MSG_SETTINGS:
             if isinstance(data, dict) and self.settings_callback is not None and "settings" in self.links.caps(peer):
                 self._call(self.settings_callback, peer, data)
+        elif kind == protocol.MSG_IDENTIFY_SCREENS:
+            labels = protocol.read_identify_screens(message)
+            if labels is not None and self.identify_callback is not None and "identify_screens" in self.links.caps(peer):
+                self._call(self.identify_callback, peer, labels)
         elif kind == protocol.MSG_PAIRED:
             read = protocol.read_paired(message)
             if read is not None and self.paired_callback is not None:
@@ -1160,15 +1180,20 @@ class LinkSender:
             self._forget_held(peer)
             self.links.close(peer, owner_module.DROPPED)
             return
+        generation = stamp = None
+        if isinstance(action, owner_module.SendClipboard):
+            with self._lock:
+                stamp = self._clipboard_stamp
+                generation = self._owner._visit_route
         with self._clip_lock:
             waiting = self._clip_wait.get(peer)
             if waiting is not None:
-                waiting.append(action)
+                waiting.append((action, generation, stamp) if isinstance(action, owner_module.SendClipboard) else action)
                 return
             if isinstance(action, owner_module.SendClipboard):
                 waiting = self._clip_wait[peer] = collections.deque()
                 try:
-                    self._on_clipboard_locked(lambda peer=peer: self._clipboard_then_rest(peer, waiting))
+                    self._on_clipboard_locked(lambda peer=peer: self._clipboard_then_rest(peer, waiting, generation, stamp))
                 except RuntimeError:
                     # No thread at shutdown: nothing must wait behind a read that never starts.
                     del self._clip_wait[peer]
@@ -1176,15 +1201,35 @@ class LinkSender:
                 return
         self._send(peer, action.message)
 
-    def _clipboard_then_rest(self, peer: bytes, waiting) -> None:
+    def _clipboard_then_rest(self, peer: bytes, waiting, generation=None, stamp=None) -> None:
         """The clipboard for `peer`, then what `waiting` held behind it, in order. `waiting` belongs to
         the link it was made on: once that link is lost (`_forget_held`) none of it is sent, as the
         machine that reconnects will be taken afresh. A clipboard asked for again takes its turn
         among the clipboard's other work, behind any write decided before it."""
+        sent = False
+        current_stamp = self._clipboard_stamp_now()
+        if current_stamp is not None and current_stamp == self._clipboard_written_stamp:
+            # A known peer write queued before this read may replace its original source stamp.
+            stamp = current_stamp
         try:
-            self._send_clipboard(peer, waiting)
-        except Exception:
-            LOGGER.exception("The clipboard could not be sent")
+            for attempt in range(3):
+                if generation is not None and (self._owner.on != peer or self._owner._visit_route != generation):
+                    break
+                if attempt:
+                    time.sleep(0.05)
+                    if stamp is None or self._clipboard_stamp_now() != stamp:
+                        break
+                try:
+                    sent = self._send_clipboard(peer, waiting, generation, stamp)
+                except Exception:
+                    if attempt == 2:
+                        LOGGER.exception("The clipboard could not be sent")
+                if sent:
+                    break
+        finally:
+            if not sent:
+                with self._lock:
+                    self._owner.clipboard_failed(peer)
         while True:
             with self._clip_lock:
                 if self._clip_wait.get(peer) is not waiting:
@@ -1193,8 +1238,9 @@ class LinkSender:
                     del self._clip_wait[peer]
                     return
                 action = waiting.popleft()
-                if isinstance(action, owner_module.SendClipboard):
-                    self._on_clipboard_locked(lambda peer=peer: self._clipboard_then_rest(peer, waiting))
+                if isinstance(action, tuple):
+                    action, generation, stamp = action
+                    self._on_clipboard_locked(lambda peer=peer: self._clipboard_then_rest(peer, waiting, generation, stamp))
                     return
             try:
                 self._send(peer, action.message)
@@ -1318,46 +1364,87 @@ class LinkSender:
 
     # -- the clipboard ------------------------------------------------------
 
-    def _note_clipboard(self) -> None:
+    def _clipboard_stamp_now(self):
+        try:
+            return getattr(self._clipboard_module(), "change_stamp", lambda: None)()
+        except Exception:
+            LOGGER.exception("Failed to read the local clipboard's change stamp")
+            return None
+
+    def _note_clipboard(self) -> bool:
         """Under the lock, before anything that may send the clipboard: whether it changed by this
         PC's own hand since this PC last sent or set it, which the owner needs to know (section 5)."""
-        stamp = getattr(self._clipboard_module(), "change_stamp", lambda: None)()
+        stamp = self._clipboard_stamp_now()
         if stamp is not None and stamp != self._clipboard_stamp:
             self._clipboard_stamp = stamp
             self._owner.clipboard_changed()
+            return True
+        return False
 
-    def _send_clipboard(self, peer: bytes, waiting) -> None:
+    def _send_clipboard(self, peer: bytes, waiting, generation=None, stamp=None) -> Optional[bool]:
+        if generation is not None and (self._owner.on != peer or self._owner._visit_route != generation or
+                                       (stamp is not None and self._clipboard_stamp_now() != stamp)):
+            return
         try:
             text, image = self._clipboard_module().get_contents()
         except Exception:
             LOGGER.exception("Failed to read the local clipboard for %s", self._name(peer))
             return
+        if generation is not None and (self._owner.on != peer or self._owner._visit_route != generation or
+                                       (stamp is not None and self._clipboard_stamp_now() != stamp)):
+            return
         with self._clip_lock:
             if self._clip_wait.get(peer) is not waiting:
                 return
         caps = self.links.caps(peer)
-        if text and ("clipboard" not in caps or len(text.encode("utf-8")) > protocol.CLIPBOARD_MAX_BYTES):
+        if text and len(text.encode("utf-8")) > protocol.CLIPBOARD_MAX_BYTES:
+            LOGGER.warning("Local clipboard text is too large; skipping the text")
             text = None
-        if image is not None and ("clipboard_image" not in caps or not protocol.png_fits(image)):
+        if image is not None and not protocol.png_fits(image):
+            LOGGER.warning("Local clipboard image is invalid or too large; skipping the image")
+            image = None
+        if "clipboard" not in caps:
+            text = None
+        if "clipboard_image" not in caps:
             image = None
         if not text and image is None:
             return
-        self.links.post(peer, protocol.clipboard_msg(text or None, image))
+        return self.links.post(peer, protocol.clipboard_msg(text or None, image))
 
     def _set_clipboard(self, message: dict) -> None:
         read = protocol.read_clipboard(message)
         if read is None or (read["text"] is None and read["image"] is None):
             return
-        try:
-            self._clipboard_module().set_contents(read["text"], read["image"])
-        except Exception:
-            LOGGER.exception("Failed to set the local clipboard")
-            return
-        self._clipboard_stamp = getattr(self._clipboard_module(), "change_stamp", lambda: None)()
+        clipboard = self._clipboard_module()
+        started_stamp = self._clipboard_stamp_now()
+        for attempt in range(3):
+            if attempt:
+                time.sleep(0.05)
+                if started_stamp is None or self._clipboard_stamp_now() != started_stamp:
+                    break
+            try:
+                written = clipboard.set_contents(read["text"], read["image"])
+            except Exception:
+                written = False
+                if attempt == 2:
+                    LOGGER.exception("Failed to set the local clipboard")
+            if written:
+                stamp = getattr(clipboard, "write_stamp", self._clipboard_stamp_now)()
+                with self._lock:
+                    self._clipboard_stamp = stamp
+                    self._clipboard_written_stamp = stamp
+                return
+        LOGGER.warning("Failed to set the local clipboard from an inbound message")
+        with self._lock:
+            self._owner.clipboard_changed()
 
     # -- what the owner reports ---------------------------------------------
 
     def _moved(self, moved: owner_module.Moved) -> None:
+        if self._pending_windows_key is not None:
+            # A buffered modifier belongs to the old owner; its press never reached either app.
+            self._intent_windows_up.add(self._pending_windows_key)
+            self._pending_windows_key = None
         if moved.to is not None:
             self._last_on = protocol.id_text(moved.to)
             if self._pin_point is None:
@@ -1524,6 +1611,8 @@ class LinkSender:
             return
         with self._lock:
             actions = owner.tick()
+            if owner.away and not self.driven() and self._note_clipboard():
+                actions += owner.clipboard_pending()
             self._queue(actions)
             if frozenset(owner.reach_for(None)) != self._armed_for:
                 # A peer began to accept this PC's input, or one left out after a failed hand-over

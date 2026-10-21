@@ -24,6 +24,8 @@ from typing import Callable, Optional
 from xml.sax.saxutils import escape
 import xml.etree.ElementTree as ET
 
+from core import windows_tools
+
 TASK_PREFIX = "Beamer-"
 CREATE_NO_WINDOW = 0x08000000
 NAME_SAM_COMPATIBLE = 2
@@ -35,7 +37,7 @@ Runner = Callable[[list], "subprocess.CompletedProcess"]
 
 
 def _run(args: list) -> subprocess.CompletedProcess:
-    return subprocess.run(args, capture_output=True, text=True, creationflags=CREATE_NO_WINDOW)
+    return windows_tools.run(args)
 
 
 def _process_user() -> str:

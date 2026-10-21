@@ -25,10 +25,11 @@ class AtlasCrossingColoursTests(unittest.TestCase):
             "peer", own_id="home")
 
     def painted_tiles(self):
-        from PySide6.QtGui import QPen
+        from PySide6.QtGui import QFontMetrics, QPen
         import diagram
 
         painter = mock.Mock()
+        painter.fontMetrics.side_effect = lambda: QFontMetrics(painter.setFont.call_args.args[0])
         borders = []
         pen = None
 

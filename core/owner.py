@@ -151,6 +151,11 @@ class Owner:
         return self.on is not None
 
     @property
+    def pressed_keys(self):
+        """Key names held on the current peer, excluding presses retained locally."""
+        return frozenset(key for kind, key in self._pressed.get(self.on, {}) if kind == "key")
+
+    @property
     def chain(self):
         """The active route, including the refusal's named onward machine when there is one."""
         return self._chain
@@ -354,10 +359,20 @@ class Owner:
     def clipboard_changed(self):
         self._clipboard_at = set()
 
-    def clipboard_arrived(self, peer, began_at, message):
-        let_go = self._let_go.pop(peer, None)
-        if let_go is None or began_at - let_go > CLIPBOARD_AFTER:
+    def clipboard_failed(self, peer):
+        """A queued read or post failed, so the next take must try this clipboard again."""
+        self._clipboard_at.discard(peer)
+
+    def clipboard_pending(self):
+        """A local copy completed after crossing; send it only to an accepted current owner."""
+        if self.on is None or self._wait is not None:
             return []
+        return self._clipboard_to(self.on)
+
+    def clipboard_arrived(self, peer, began_at, message):
+        if not self.expects_clipboard(peer, began_at):
+            return []
+        self._let_go.pop(peer)
         self._clipboard_at = {peer}
         actions = [SetClipboard(message)]
         if self.on is not None:
@@ -370,7 +385,7 @@ class Owner:
         by `clipboard_arrived`'s own rule, however long it then took to arrive. A link asks this,
         without the app's lock, before it reads a frame too large for any other message."""
         let_go = self._let_go.get(peer)
-        return let_go is not None and began - let_go <= CLIPBOARD_AFTER
+        return let_go is not None and 0 <= began - let_go <= CLIPBOARD_AFTER
 
     def _clipboard_to(self, peer):
         if peer in self._clipboard_at:
@@ -448,7 +463,7 @@ class Owner:
         self._wait = None
         if peer is not None:
             self._hold_back(peer, why)
-        return self._stay() + [Unreachable(peer, why, other)] + self._replay_held()
+        return self._stay() + [Unreachable(peer, why, other)] + self.clipboard_pending() + self._replay_held()
 
     def held_back(self, peer):
         """Whether `peer` refused, or did not take, a move a moment ago and is not asked again yet."""

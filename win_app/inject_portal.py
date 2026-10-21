@@ -12,8 +12,8 @@ token (persist_mode 2), kept in the state directory, so later starts ask nothing
 Keys are pressed by evdev code on the keyboard the desktop gives, whose layout it hands over with
 the device and whose locks and group it reports as they change. A character is typed as on X11
 (inject_x11.plan_key: the layout's own key, Shift worked around it, the US place under a chord),
-with two differences. The desktop's keymap cannot be changed, so a character the layout has no key
-for is not typed (logged once). And a held key is repeated by the app it reaches, not the server,
+with two differences. The desktop's keymap cannot be changed, so a character with no plain,
+Shift, AltGr or supported dead-accent sequence is not typed (logged once). And a held key is repeated by the app it reaches, not the server,
 so a key typed with Shift changed around it is let go at once and each of the peer's repeats types
 it again. The desktop reports a lock's new state only after the lock key is let go, a moment later,
 so input after a Caps Lock or Num Lock Beamer plays waits for that report (LOCK_SECONDS at most): a
@@ -100,6 +100,8 @@ def _report_permission(status: str, detail: str = "", retryable: bool = False) -
 
 class WaylandLayout(Layout):
     """inject_x11's Layout over the desktop's keymap, which cannot be changed: no spare keys."""
+
+    can_remap = False
 
     def spare(self) -> List[int]:
         return []

@@ -516,6 +516,18 @@ class LinkLiveTests(unittest.TestCase):
         self.assertTrue(self.link.post(protocol.focus_v6(route, HERE, resistance_px=120, reach=[])))
         self.assertTrue(wait_for(lambda: any(m["type"] == protocol.MSG_ACCEPT for m in self.side.messages)), self.side.messages)
 
+    def test_fast_overlapping_typing_survives_the_outbound_queue(self):
+        self.take()
+        expected = []
+        for _ in range(100):
+            for name, down in (("shift", True), ("a", True), ("b", True), ("a", False),
+                               ("b", False), ("shift", False), ("o", True), ("o", True),
+                               ("o", False), ("o", True), ("o", False)):
+                self.assertTrue(self.link.send_input(protocol.key_msg("keydown" if down else "keyup", name)))
+                expected.append(("key", name, down))
+        self.assertTrue(wait_for(lambda: self.link._last_ack_seq == len(expected)))
+        self.assertEqual(self.machine.injected(), expected)
+
     def test_send_input_numbers_from_one_and_the_responder_injects_for_its_owner(self):
         self.take()
         self.assertTrue(self.link.send_input(protocol.key_msg("keydown", "a")))
