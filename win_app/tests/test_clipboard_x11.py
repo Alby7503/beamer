@@ -4,6 +4,7 @@ import sys
 import threading
 import time
 import unittest
+from unittest import mock
 from pathlib import Path
 
 try:
@@ -106,6 +107,27 @@ class ClipboardX11Test(unittest.TestCase):
 
     def test_empty_clipboard_reads_as_nothing(self):
         self.assertEqual(self.cb.get_contents(), (None, None))
+
+    def test_strict_read_distinguishes_gui_failure_from_empty(self):
+        self.assertEqual(self.cb.read_contents(), (None, None))
+        with mock.patch.object(self.cb, "_read", side_effect=OSError("selection busy")):
+            with self.assertRaises(OSError):
+                self.cb.read_contents()
+            self.assertEqual(self.cb.get_contents(), (None, None))
+
+    def test_strict_read_reports_a_worker_timeout(self):
+        self.cb.TIMEOUT_SECONDS = 0.01
+        outcome = []
+        def read():
+            try:
+                self.cb.read_contents()
+            except OSError:
+                outcome.append("failed")
+        thread = threading.Thread(target=read)
+        thread.start()
+        thread.join(1)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(outcome, ["failed"])
 
     def test_changed_contents_after_an_outside_change(self):
         self.outside_text("from another app")

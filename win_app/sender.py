@@ -43,6 +43,7 @@ from core.i18n import N_, tr
 LOGGER = logging.getLogger(__name__)
 
 SEND_QUEUE_SIZE = 4096
+MOTION_INTERVAL_SECONDS = 0.002
 MONITORS_MAX_AGE_SECONDS = 1.0
 TICK_SECONDS = 0.1
 ROUND_TRIP_MAX_AGE_SECONDS = 5.0
@@ -1123,6 +1124,17 @@ class LinkSender:
         actions = queued_actions
         for index, action in enumerate(actions):
             if isinstance(action, (owner_module.Send, owner_module.SendClipboard, owner_module.SetClipboard, owner_module.Drop)):
+                with self._outbound.mutex:
+                    if (isinstance(action, owner_module.Send) and self._outbound.queue
+                            and action.message.get("type") == protocol.MSG_MOUSEMOVE
+                            and isinstance(self._outbound.queue[-1], owner_module.Send)
+                            and self._outbound.queue[-1].message.get("type") == protocol.MSG_MOUSEMOVE
+                            and self._outbound.queue[-1].peer == action.peer):
+                        merged = protocol.coalesce_mousemove(self._outbound.queue[-1].message, action.message,
+                                                             preserve_path="motion_path" in self.links.caps(action.peer))
+                        if merged is not None:
+                            self._outbound.queue[-1] = owner_module.Send(action.peer, merged)
+                            continue
                 try:
                     self._outbound.put_nowait(action)
                 except queue.Full:
@@ -1149,20 +1161,46 @@ class LinkSender:
                 self._unreachable(action)
 
     def _outbound_worker(self) -> None:
+        next_motion_at = 0.0
         while not self._stop_event.is_set():
             try:
                 action = self._outbound.get(timeout=0.2)
             except queue.Empty:
                 continue
+            consumed = 1
             try:
+                motion = isinstance(action, owner_module.Send) and action.message.get("type") == protocol.MSG_MOUSEMOVE
+                if motion:
+                    delay = next_motion_at - time.monotonic()
+                    if delay > 0:
+                        # Python's Windows sleep uses a high-resolution waitable timer; an Event
+                        # wait can round this short interval to the system's 15.6 ms timer tick.
+                        time.sleep(delay)
+                    with self._outbound.mutex:
+                        while self._outbound.queue:
+                            following = self._outbound.queue[0]
+                            if (not isinstance(following, owner_module.Send) or following.peer != action.peer
+                                    or following.message.get("type") != protocol.MSG_MOUSEMOVE):
+                                break
+                            merged = protocol.coalesce_mousemove(action.message, following.message,
+                                                                 preserve_path="motion_path" in self.links.caps(action.peer))
+                            if merged is None:
+                                break
+                            action = owner_module.Send(action.peer, merged)
+                            self._outbound.queue.popleft()
+                            consumed += 1
+                        self._outbound.not_full.notify_all()
                 self._deliver(action)
+                if motion:
+                    next_motion_at = time.monotonic() + MOTION_INTERVAL_SECONDS
             except Exception:
                 # One bad message must not end the only thread that drains this queue: nothing
                 # restarts it, and the hooks would keep swallowing input into a queue nobody reads.
                 LOGGER.exception("outbound worker recovered")
                 self._lost()
             finally:
-                self._outbound.task_done()
+                for _ in range(consumed):
+                    self._outbound.task_done()
 
     def _deliver(self, action) -> None:
         """Sends in the order the owner gave them, except that reading the clipboard (which can be
@@ -1188,6 +1226,15 @@ class LinkSender:
         with self._clip_lock:
             waiting = self._clip_wait.get(peer)
             if waiting is not None:
+                if (isinstance(action, owner_module.Send) and waiting
+                        and action.message.get("type") == protocol.MSG_MOUSEMOVE
+                        and isinstance(waiting[-1], owner_module.Send)
+                        and waiting[-1].message.get("type") == protocol.MSG_MOUSEMOVE):
+                    merged = protocol.coalesce_mousemove(waiting[-1].message, action.message,
+                                                         preserve_path="motion_path" in self.links.caps(peer))
+                    if merged is not None:
+                        waiting[-1] = owner_module.Send(peer, merged)
+                        return
                 waiting.append((action, generation, stamp) if isinstance(action, owner_module.SendClipboard) else action)
                 return
             if isinstance(action, owner_module.SendClipboard):
@@ -1224,10 +1271,10 @@ class LinkSender:
                 except Exception:
                     if attempt == 2:
                         LOGGER.exception("The clipboard could not be sent")
-                if sent:
+                if sent is not False:
                     break
         finally:
-            if not sent:
+            if sent is False:
                 with self._lock:
                     self._owner.clipboard_failed(peer)
         while True:
@@ -1382,20 +1429,22 @@ class LinkSender:
         return False
 
     def _send_clipboard(self, peer: bytes, waiting, generation=None, stamp=None) -> Optional[bool]:
+        """True means posted, None means no supported content, False means failed or cancelled."""
         if generation is not None and (self._owner.on != peer or self._owner._visit_route != generation or
                                        (stamp is not None and self._clipboard_stamp_now() != stamp)):
-            return
+            return False
         try:
-            text, image = self._clipboard_module().get_contents()
+            clipboard = self._clipboard_module()
+            text, image = getattr(clipboard, "read_contents", clipboard.get_contents)()
         except Exception:
             LOGGER.exception("Failed to read the local clipboard for %s", self._name(peer))
-            return
+            return False
         if generation is not None and (self._owner.on != peer or self._owner._visit_route != generation or
                                        (stamp is not None and self._clipboard_stamp_now() != stamp)):
-            return
+            return False
         with self._clip_lock:
             if self._clip_wait.get(peer) is not waiting:
-                return
+                return False
         caps = self.links.caps(peer)
         if text and len(text.encode("utf-8")) > protocol.CLIPBOARD_MAX_BYTES:
             LOGGER.warning("Local clipboard text is too large; skipping the text")
@@ -1408,7 +1457,7 @@ class LinkSender:
         if "clipboard_image" not in caps:
             image = None
         if not text and image is None:
-            return
+            return None
         return self.links.post(peer, protocol.clipboard_msg(text or None, image))
 
     def _set_clipboard(self, message: dict) -> None:

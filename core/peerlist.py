@@ -175,11 +175,17 @@ def add_peer(settings: dict, entry: dict, replaced: Optional[dict] = None) -> No
             for field in ("label", "left_out", "left_out_ways", "side", "side_set_at", "side_by"):
                 if field in old:
                     entry[field] = copy.deepcopy(old[field])
+            # A re-pair may authenticate over another interface without changing the chosen one.
+            # A newly typed pairing address is an explicit replacement of that choice.
+            if old.get("host") and old.get("host_pinned") is not False and entry.get("host_pinned") is not True:
+                entry.update(host=old["host"], port=old["port"], host_pinned=True)
     if (replaced is not None and replaced.get("from_1_4") is True and replaced.get("id") == "" and entry.get("id")
             and replaced.get("host") and replaced.get("host") == entry.get("host")
             and replaced.get("platform") == entry.get("platform")):
         entry.update({field: replaced.get(field, default) for field, default in
                       (("side", ""), ("side_set_at", 0), ("side_by", ""))})
+        if replaced.get("host_pinned") is not False:
+            entry["host_pinned"] = True
         for zone in settings["zones"]:
             if zone.get("peer") == "":
                 zone["peer"] = entry["id"]

@@ -109,6 +109,30 @@ class DormantPeerTests(unittest.TestCase):
         self.assertEqual(self.settings["layout"][PEER], {"x": 20, "y": 30, "w": 160, "h": 100})
         self.assertNotIn("dormant", repaired)
 
+    def test_repair_keeps_an_explicit_address_even_when_pairing_uses_wifi(self):
+        old = self.settings["peers"][0]
+        old.update(host="192.0.2.10", port=24821, host_pinned=True)
+        repaired = entry(token="new", host="198.51.100.10", port=24820, host_pinned=False)
+        peerlist.add_peer(self.settings, repaired, copy.deepcopy(old))
+        self.assertEqual((repaired["host"], repaired["port"], repaired["host_pinned"]),
+                         ("192.0.2.10", 24821, True))
+
+    def test_an_explicit_new_pairing_address_replaces_the_old_pin(self):
+        old = self.settings["peers"][0]
+        old.update(host="192.0.2.10", port=24821, host_pinned=True)
+        repaired = entry(token="new", host="198.51.100.10", port=24820, host_pinned=True)
+        peerlist.add_peer(self.settings, repaired, copy.deepcopy(old))
+        self.assertEqual((repaired["host"], repaired["port"], repaired["host_pinned"]),
+                         ("198.51.100.10", 24820, True))
+
+    def test_repair_keeps_a_legacy_saved_address_without_pin_provenance(self):
+        old = self.settings["peers"][0]
+        old.update(host="192.0.2.10", port=24821)
+        repaired = entry(token="new", host="198.51.100.10", port=24820, host_pinned=False)
+        peerlist.add_peer(self.settings, repaired, copy.deepcopy(old))
+        self.assertEqual((repaired["host"], repaired["port"], repaired["host_pinned"]),
+                         ("192.0.2.10", 24821, True))
+
     def test_repaired_peer_with_retained_side_and_intent_crosses_at_its_picture_contact(self):
         old = self.settings["peers"][0]
         old.update(side="left", side_set_at=42, side_by=OWN)

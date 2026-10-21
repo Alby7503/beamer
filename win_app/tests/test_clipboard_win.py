@@ -217,6 +217,9 @@ class FakeWin32:
     def GetClipboardData(self, clipboard_format):
         return self.formats.get(clipboard_format, 0)
 
+    def IsClipboardFormatAvailable(self, clipboard_format):
+        return clipboard_format in self.formats
+
     def SetClipboardData(self, clipboard_format, handle):
         self.formats[clipboard_format] = handle
         return handle
@@ -243,6 +246,46 @@ class ClipboardOrchestrationTests(unittest.TestCase):
             patch.start()
             self.addCleanup(patch.stop)
         self.mem32 = FakeMem32()
+
+    def test_strict_read_retries_native_contention_without_another_copy(self):
+        win32 = FakeWin32(self.mem32, {CF_UNICODETEXT: self.mem32.handle_for("copied")})
+        with mock.patch.multiple(clipboard_win, _IS_WINDOWS=True, user32=win32, kernel32=self.mem32), \
+                mock.patch.object(clipboard_win, "_open_clipboard", return_value=False):
+            with self.assertRaises(OSError):
+                clipboard_win.read_contents()
+            self.assertEqual(clipboard_win.get_contents(), (None, None))
+        with mock.patch.multiple(clipboard_win, _IS_WINDOWS=True, user32=win32, kernel32=self.mem32):
+            self.assertEqual(clipboard_win.read_contents(), ("copied", None))
+
+    def test_strict_read_distinguishes_a_native_exception_from_empty(self):
+        win32 = FakeWin32(self.mem32)
+        with mock.patch.multiple(clipboard_win, _IS_WINDOWS=True, user32=win32, kernel32=self.mem32):
+            self.assertEqual(clipboard_win.read_contents(), (None, None))
+            with mock.patch.object(win32, "GetClipboardData", side_effect=OSError("provider busy")):
+                with self.assertRaises(OSError):
+                    clipboard_win.read_contents()
+                self.assertEqual(clipboard_win.get_contents(), (None, None))
+
+    def test_strict_read_preserves_valid_text_when_the_image_provider_fails(self):
+        win32 = FakeWin32(self.mem32, {CF_UNICODETEXT: self.mem32.handle_for("copied")})
+        original = win32.GetClipboardData
+        def read(kind):
+            if kind == CF_DIB:
+                raise OSError("image provider busy")
+            return original(kind)
+        with mock.patch.multiple(clipboard_win, _IS_WINDOWS=True, user32=win32, kernel32=self.mem32), \
+                mock.patch.object(win32, "GetClipboardData", side_effect=read):
+            self.assertEqual(clipboard_win.read_contents(), ("copied", None))
+
+    def test_strict_read_reports_an_offered_format_that_cannot_be_read(self):
+        win32 = FakeWin32(self.mem32, {CF_UNICODETEXT: self.mem32.handle_for("copied")})
+        with mock.patch.multiple(clipboard_win, _IS_WINDOWS=True, user32=win32, kernel32=self.mem32):
+            with mock.patch.object(win32, "GetClipboardData", return_value=0):
+                with self.assertRaises(OSError):
+                    clipboard_win.read_contents()
+            with mock.patch.object(self.mem32, "GlobalLock", return_value=0):
+                with self.assertRaises(OSError):
+                    clipboard_win.read_contents()
 
     def test_get_contents_reads_text_and_converts_the_dib(self):
         win32 = FakeWin32(

@@ -448,6 +448,7 @@ MAX_NAME_CHARS = 48
 MAX_ASCII_FIELD = 32
 MAX_KEY_CHARS = 32
 MOVE_MAX = 65535
+MOTION_SAMPLES_MAX = 64
 DEFAULT_RESISTANCE_PX = 120
 MAX_RESISTANCE_PX = 1000
 TEXT_MAX_BYTES = 4096
@@ -1178,6 +1179,35 @@ def mousemove_msg(dx: int, dy: int, seq: int = None) -> dict:
     return _with_seq(MSG_MOUSEMOVE, {"dx": dx, "dy": dy}, seq)
 
 
+def coalesce_mousemove(previous: dict, current: dict, *, preserve_path=True):
+    """Sum relative travel while retaining the bounded path needed by crossing geometry."""
+    if previous.get("type") != MSG_MOUSEMOVE or current.get("type") != MSG_MOUSEMOVE:
+        return None
+    before, after = previous.get("data") or {}, current.get("data") or {}
+    if ("seq" in before) != ("seq" in after):
+        return None
+    if before.get("seq") is not None and after.get("seq", 0) <= before["seq"]:
+        return None
+    for axis in ("dx", "dy"):
+        if not _int(before.get(axis), -MOVE_MAX, MOVE_MAX) or not _int(after.get(axis), -MOVE_MAX, MOVE_MAX):
+            return None
+        if not preserve_path and ((before[axis] > 0) != (after[axis] > 0)
+                                  or (before[axis] < 0) != (after[axis] < 0)):
+            return None
+    if not preserve_path and (before["dx"] and before["dy"] or after["dx"] and after["dy"]):
+        return None
+    dx, dy = before["dx"] + after["dx"], before["dy"] + after["dy"]
+    if abs(dx) > MOVE_MAX or abs(dy) > MOVE_MAX:
+        return None
+    merged = mousemove_msg(dx, dy, after.get("seq"))
+    if preserve_path:
+        samples = before.get("samples", [[before["dx"], before["dy"]]]) + after.get("samples", [[after["dx"], after["dy"]]])
+        if len(samples) > MOTION_SAMPLES_MAX:
+            return None
+        merged["data"]["samples"] = samples
+    return merged
+
+
 def text_msg(text: str, seq: int = None) -> dict:
     return _with_seq(MSG_TEXT, {"text": text}, seq)
 
@@ -1202,6 +1232,15 @@ def read_input(message):
         if not _int(data.get("dx"), -MOVE_MAX, MOVE_MAX) or not _int(data.get("dy"), -MOVE_MAX, MOVE_MAX):
             return None
         read.update(dx=data["dx"], dy=data["dy"])
+        if "samples" in data:
+            samples = data["samples"]
+            if (not isinstance(samples, list) or not 1 <= len(samples) <= MOTION_SAMPLES_MAX
+                    or any(not isinstance(sample, list) or len(sample) != 2
+                           or not all(_int(value, -MOVE_MAX, MOVE_MAX) for value in sample) for sample in samples)
+                    or sum(sample[0] for sample in samples) != data["dx"]
+                    or sum(sample[1] for sample in samples) != data["dy"]):
+                return None
+            read["samples"] = samples
     elif kind in (MSG_MOUSEDOWN, MSG_MOUSEUP):
         if not _one_of(data.get("button"), BUTTONS):
             return None

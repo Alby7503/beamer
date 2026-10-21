@@ -7,6 +7,7 @@ import logging
 import os
 from pathlib import Path
 import sys
+import time
 
 from PySide6.QtCore import QObject, QProcess, QProcessEnvironment, QRect, QRectF, Qt, QTimer
 from PySide6.QtGui import QColor, QGuiApplication, QPainter, QPen
@@ -106,6 +107,7 @@ class IdentifyScreens(QObject):
         self.helper_focus = None
         self._helper_stderr = b""
         self._pending = []
+        self._last_request_at = None
         self._expiry = QTimer(self)
         self._expiry.setSingleShot(True)
         self._expiry.timeout.connect(self.stop)
@@ -114,6 +116,10 @@ class IdentifyScreens(QObject):
         self._startup.timeout.connect(self._fallback)
 
     def show_numbers(self, labels, displays):
+        now = time.monotonic()
+        if self._last_request_at is not None and now - self._last_request_at < OVERLAY_SECONDS:
+            return
+        self._last_request_at = now
         self.stop()
         self.helper_focus = None
         wayland = QGuiApplication.platformName().startswith("wayland")

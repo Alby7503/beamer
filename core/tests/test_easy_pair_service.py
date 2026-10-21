@@ -15,6 +15,8 @@ def service(name, ident, clock=None):
 
 
 def note(a, b, address):
+    if b.bind_port == 0:
+        b.bind_port = address[1]
     a._note_beacon(pairing.decode(b._beacon()), address)
 
 
@@ -82,7 +84,7 @@ class EasyPairServiceTests(unittest.TestCase):
         note(a, c, ("192.0.2.3", 9003))
         assert a.nearby_status["state"] == "choosing"
         with a._lock:
-            a._seen.pop("192.0.2.3")
+            a._seen.pop(("192.0.2.3", 24800))
         a._tick_nearby(None)
         assert a.nearby_status["state"] == "choosing" and a.nearby_status["peer"] is None
 

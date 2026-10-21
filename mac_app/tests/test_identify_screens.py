@@ -73,10 +73,17 @@ class OverlayTests(unittest.TestCase):
         self.assertEqual(self.overlay.panels, [])
         self.assertFalse(any(panel.isVisible() for panel in panels))
 
-    def test_repeat_invocation_replaces_panels_and_old_timeout_cannot_hide_new_ones(self):
+    @mock.patch("time.monotonic", return_value=0.0)
+    def test_repeat_does_not_replace_panels_or_extend_expiry_and_reopens_at_boundary(self, clock):
         self.overlay.show({"0": 2, "1": 1})
         previous = list(self.overlay.panels)
         _delay, old_expire, old_args = self.later[-1]
+        clock.return_value = 2.9
+        for _ in range(100):
+            self.overlay.show({"0": 1, "1": 2})
+        self.assertEqual(self.overlay.panels, previous)
+        self.assertEqual(len(self.later), 1)
+        clock.return_value = 3.0
         self.overlay.show({"0": 2, "1": 1})
         old_expire(*old_args)
         self.assertEqual(len(self.overlay.panels), 2)
@@ -85,6 +92,18 @@ class OverlayTests(unittest.TestCase):
         _delay, expire, args = self.later[-1]
         expire(*args)
         self.assertEqual(self.overlay.panels, [])
+
+    @mock.patch("time.monotonic", return_value=0.0)
+    def test_failed_show_and_explicit_hide_do_not_reset_request_limit(self, clock):
+        with mock.patch.object(identify_overlay.desktop_mac, "display_map", side_effect=RuntimeError("unavailable")):
+            self.overlay.show({"0": 1})
+        self.overlay.hide()
+        clock.return_value = 2.9
+        self.overlay.show({"0": 1})
+        self.assertEqual(self.overlay.panels, [])
+        clock.return_value = 3.0
+        self.overlay.show({"0": 1})
+        self.assertEqual(len(self.overlay.panels), 2)
 
     def test_stale_request_is_replaced_by_numbers_for_all_current_displays(self):
         self.overlay.show({"missing": 3})

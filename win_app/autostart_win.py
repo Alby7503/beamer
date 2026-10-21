@@ -25,6 +25,7 @@ from xml.sax.saxutils import escape
 import xml.etree.ElementTree as ET
 
 from core import windows_tools
+from core import portable_runtime
 
 TASK_PREFIX = "Beamer-"
 CREATE_NO_WINDOW = 0x08000000
@@ -97,7 +98,7 @@ def can_run_for_current_user() -> bool:
 
 def installed_exe() -> Optional[str]:
     """The exe a task can start, or None when running from source, where there is none."""
-    return sys.executable if getattr(sys, "frozen", False) else None
+    return sys.executable if getattr(sys, "frozen", False) and not portable_runtime.enabled() else None
 
 
 def task_xml(exe: str, user: str, arguments: str = "--hidden") -> str:
@@ -135,6 +136,8 @@ def task_xml(exe: str, user: str, arguments: str = "--hidden") -> str:
 
 
 def is_enabled(run: Runner = _run, user: Optional[str] = None) -> bool:
+    if portable_runtime.enabled():
+        return False
     user = user or current_user()
     migrate_legacy_task(run, user)
     return _task_enabled(task_name(user), run)
@@ -172,6 +175,8 @@ def _replacement_ready(root, exe: str, arguments: str) -> bool:
 
 def migrate_legacy_task(run: Runner = _run, user: Optional[str] = None) -> None:
     """Keep the old starter until its owner's replacement has been registered successfully."""
+    if portable_runtime.enabled():
+        return
     user = user or current_user()
     root = _task_root("Beamer", run)
     if root is None:
@@ -215,6 +220,8 @@ def _user_sid(user: str) -> str:
 def set_enabled(enabled: bool, exe: str, user: Optional[str] = None, run: Runner = _run,
                 *, arguments: str = "--hidden") -> None:
     """Raises OSError with schtasks' own words when Windows refuses."""
+    if portable_runtime.enabled():
+        raise OSError("Portable Beamer cannot change start at sign-in")
     user = user or current_user()
     name = task_name(user)
     if not enabled:
@@ -239,6 +246,8 @@ def set_enabled(enabled: bool, exe: str, user: Optional[str] = None, run: Runner
 
 
 def remove_legacy_task(run: Runner = _run, *, disable_first: bool = False) -> None:
+    if portable_runtime.enabled():
+        return
     if run(["schtasks", "/query", "/tn", "Beamer"]).returncode == 0:
         if disable_first:
             result = run(["schtasks", "/change", "/tn", "Beamer", "/disable"])

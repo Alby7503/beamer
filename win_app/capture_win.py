@@ -59,6 +59,9 @@ user32 = ctypes.WinDLL("user32", use_last_error=True) if _IS_WINDOWS else None
 kernel32 = ctypes.WinDLL("kernel32", use_last_error=True) if _IS_WINDOWS else None
 
 WM_INPUT = 0x00FF
+WM_MODIFIER_RESYNC = 0x8001
+EVENT_SYSTEM_DESKTOPSWITCH = 0x0020
+WINEVENT_OUTOFCONTEXT = 0
 RID_INPUT = 0x10000003
 RIDEV_INPUTSINK = 0x00000100
 RIM_TYPEMOUSE = 0
@@ -541,6 +544,7 @@ class Hooks:
         self._composed_local: Dict[int, Union[DeadKey, TextInput]] = {}
         self._failure: Optional[BaseException] = None
         self._handles: List[int] = []
+        self._desktop_hook = None
         # Kept alive for as long as the hooks are installed: a callback that
         # is garbage collected while Windows still holds its address crashes
         # the process the next time a key is pressed.
@@ -591,7 +595,8 @@ class Hooks:
         keyboard = _LL_HOOK_PROC(self._keyboard_proc)
         mouse = _LL_HOOK_PROC(self._mouse_proc)
         window_proc = _WNDPROC(self._window_proc)
-        self._callbacks = [keyboard, mouse, window_proc]
+        desktop_proc = _WINEVENTPROC(self._desktop_proc)
+        self._callbacks = [keyboard, mouse, window_proc, desktop_proc]
         module = kernel32.GetModuleHandleW(None)
         self._thread_id = kernel32.GetCurrentThreadId()
         # Highest within Beamer's above-normal class: this thread answers the
@@ -612,6 +617,12 @@ class Hooks:
                 if not handle:
                     raise ctypes.WinError(ctypes.get_last_error())
                 self._handles.append(handle)
+            self._desktop_hook = user32.SetWinEventHook(
+                EVENT_SYSTEM_DESKTOPSWITCH, EVENT_SYSTEM_DESKTOPSWITCH, None, desktop_proc, 0, 0,
+                WINEVENT_OUTOFCONTEXT,
+            )
+            if not self._desktop_hook:
+                raise RuntimeError("Could not monitor Windows input desktop changes")
             self._state.caps_lock = read_caps_lock()
             self._ready.set()
             message = MSG()
@@ -623,6 +634,9 @@ class Hooks:
             self._failure = exc
             self._ready.set()
         finally:
+            if self._desktop_hook:
+                user32.UnhookWinEvent(self._desktop_hook)
+                self._desktop_hook = None
             for handle in self._handles:
                 user32.UnhookWindowsHookEx(handle)
             self._handles = []
@@ -641,7 +655,26 @@ class Hooks:
             self._dead_keys_swallowed.clear()
             self._composed_local.clear()
 
+    def _desktop_proc(self, _hook, _event, _hwnd, _object, _child, _thread, _time):
+        # OUTOFCONTEXT delivers on this hook thread; defer the snapshot to its window queue.
+        if self._window and not user32.PostMessageW(self._window, WM_MODIFIER_RESYNC, 0, 0):
+            LOGGER.warning("Could not queue the keyboard state after an input desktop switch")
+
     def _window_proc(self, hwnd, message, wparam, lparam):
+        if message == WM_MODIFIER_RESYNC:
+            try:
+                from desktop_win import _on_default_desktop
+
+                # A secure desktop makes GetAsyncKeyState return zero even for held keys.
+                if _on_default_desktop():
+                    ctrl_down = {vk for vk in self._state.ctrl_down if user32.GetAsyncKeyState(vk) & 0x8000}
+                    altgr_down = self._state.altgr_down and bool(user32.GetAsyncKeyState(0xA5) & 0x8000)
+                    # Only prune observed real Ctrl presses: AltGr's synthetic Ctrl also reads down.
+                    self._state.ctrl_down.intersection_update(ctrl_down)
+                    self._state.altgr_down = altgr_down
+            except Exception:
+                LOGGER.exception("Could not restore the keyboard state after an input desktop switch")
+            return 0
         if message == WM_INPUT:
             try:
                 motion = _raw_mouse_motion(lparam)
@@ -845,12 +878,23 @@ if _IS_WINDOWS:
     _WNDPROC = ctypes.WINFUNCTYPE(
         ctypes.c_ssize_t, ctypes.c_void_p, ctypes.c_uint, ctypes.c_size_t, ctypes.c_ssize_t
     )
+    _WINEVENTPROC = ctypes.WINFUNCTYPE(
+        None, ctypes.c_void_p, ctypes.c_ulong, ctypes.c_void_p, ctypes.c_long, ctypes.c_long,
+        ctypes.c_ulong, ctypes.c_ulong,
+    )
 
     user32.SetWindowsHookExW.restype = ctypes.c_void_p
     user32.SetWindowsHookExW.argtypes = [ctypes.c_int, _LL_HOOK_PROC, ctypes.c_void_p, ctypes.c_ulong]
     user32.CallNextHookEx.restype = ctypes.c_ssize_t
     user32.CallNextHookEx.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_size_t, ctypes.c_ssize_t]
     user32.UnhookWindowsHookEx.argtypes = [ctypes.c_void_p]
+    user32.SetWinEventHook.restype = ctypes.c_void_p
+    user32.SetWinEventHook.argtypes = [
+        ctypes.c_ulong, ctypes.c_ulong, ctypes.c_void_p, _WINEVENTPROC, ctypes.c_ulong, ctypes.c_ulong,
+        ctypes.c_ulong,
+    ]
+    user32.UnhookWinEvent.argtypes = [ctypes.c_void_p]
+    user32.PostMessageW.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_size_t, ctypes.c_ssize_t]
     user32.ToUnicodeEx.restype = ctypes.c_int
     user32.ToUnicodeEx.argtypes = [
         ctypes.c_uint,
@@ -879,6 +923,8 @@ if _IS_WINDOWS:
     user32.UnregisterClassW.argtypes = [ctypes.c_wchar_p, ctypes.c_void_p]
     user32.GetKeyState.restype = ctypes.c_short
     user32.GetKeyState.argtypes = [ctypes.c_int]
+    user32.GetAsyncKeyState.restype = ctypes.c_short
+    user32.GetAsyncKeyState.argtypes = [ctypes.c_int]
     user32.CreateWindowExW.restype = ctypes.c_void_p
     user32.CreateWindowExW.argtypes = [
         ctypes.c_ulong,
@@ -908,7 +954,7 @@ if _IS_WINDOWS:
 else:  # pragma: no cover - the structures above are only used on Windows
     POINT = KBDLLHOOKSTRUCT = MSLLHOOKSTRUCT = MSG = None
     RAWINPUT = RAWINPUTDEVICE = WNDCLASS = None
-    _LL_HOOK_PROC = _WNDPROC = None
+    _LL_HOOK_PROC = _WNDPROC = _WINEVENTPROC = None
 
 
 _WINDOW_CLASS_NAME = "BeamerRawInput"

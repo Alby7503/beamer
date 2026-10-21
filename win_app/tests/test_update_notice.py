@@ -78,6 +78,12 @@ class UpdateNoticeTest(unittest.TestCase):
         self.assertIn("software store", self.window.update_notice_text.text())
         self.assertTrue(self.window.update_button.isHidden())
         self.assertFalse(self.window.update_notes.isHidden())
+        self.assertFalse(self.window.header_action.isEnabled())
+
+    def test_desktop_update_header_remains_a_download_action(self):
+        with patch.object(kvm.portal, "sandboxed", return_value=False):
+            self.window._on_update(FOUND)
+        self.assertTrue(self.window.header_action.isEnabled())
 
     def test_linux_start_checks_for_updates_without_waiting_for_a_toggle(self):
         events = []

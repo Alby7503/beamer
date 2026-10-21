@@ -50,6 +50,9 @@ class FirewallStatus:
     # pairing existed does not claim a missing rule it knows nothing about.
     pairing_allowed: bool = True
     pairing_tcp_allowed: bool = True
+    # Rule presence controls automatic setup; profile coverage only controls advice.
+    pairing_covered: bool = True
+    pairing_tcp_covered: bool = True
 
 
 def missing_rule(status: "FirewallStatus") -> bool:
@@ -141,27 +144,36 @@ def _lan_networks(networks: Sequence[dict]) -> list:
 
 def interpret(payload: dict, exe: str, port: int, elevated: bool = True) -> FirewallStatus:
     rules = [rule for rule in payload.get("rules", []) if _rule_applies(rule, exe, port)]
+    pairing_rules = {
+        transport: [rule for rule in payload.get("rules", []) if _rule_applies(rule, exe, PAIRING_PORT, transport)]
+        for transport in ("udp", "tcp")
+    }
     networks = list(payload.get("networks", []))
     active = tuple(sorted({str(n.get("category", "")) for n in networks if n.get("category")}))
     lan = _lan_networks(networks)
     lan_profiles = tuple(sorted({str(n.get("category", "")) for n in lan if n.get("category")}))
 
     allow_profiles = [_profiles(r.get("profile")) for r in rules if str(r.get("action", "")).lower() == "allow"]
-    block_profiles = [_profiles(r.get("profile")) for r in rules if str(r.get("action", "")).lower() == "block"]
+    block_profiles = [_profiles(r.get("profile")) for r in rules + pairing_rules["udp"] + pairing_rules["tcp"]
+                      if str(r.get("action", "")).lower() == "block"]
 
     def touches(profile_set: Optional[set], wanted: Iterable[str]) -> bool:
-        return profile_set is None or any(name in profile_set for name in wanted)
+        return profile_set is None or any(("Domain" if name == "DomainAuthenticated" else name) in profile_set
+                                         for name in wanted)
+
+    def covers(profiles) -> bool:
+        return bool(profiles) and all(any(touches(p, (name,)) for p in profiles) for name in lan_profiles)
 
     # A block rule beats an allow rule on any profile they share, so a block scoped to a
     # profile nothing is connected to is harmless and must not send the user chasing it.
     blocked = any(touches(p, active or ("Domain", "Private", "Public")) for p in block_profiles)
-    covered = all(any(touches(p, (name,)) for p in allow_profiles) for name in lan_profiles) and bool(allow_profiles)
+    covered = covers(allow_profiles)
     public = tuple((int(n.get("index", 0)), str(n.get("alias", ""))) for n in lan if str(n.get("category", "")) == "Public")
-    def pairing_allowed(protocol: str) -> bool:
-        return any(
-            _rule_applies(rule, exe, PAIRING_PORT, protocol) and str(rule.get("action", "")).lower() == "allow"
-            for rule in payload.get("rules", [])
-        )
+    pairing_profiles = {
+        transport: [_profiles(rule.get("profile")) for rule in matching
+                    if str(rule.get("action", "")).lower() == "allow"]
+        for transport, matching in pairing_rules.items()
+    }
 
     return FirewallStatus(
         port=port,
@@ -173,22 +185,26 @@ def interpret(payload: dict, exe: str, port: int, elevated: bool = True) -> Fire
         public_interfaces=public,
         elevated=elevated,
         error="",
-        pairing_allowed=pairing_allowed("udp"),
-        pairing_tcp_allowed=pairing_allowed("tcp"),
+        pairing_allowed=bool(pairing_profiles["udp"]),
+        pairing_tcp_allowed=bool(pairing_profiles["tcp"]),
+        pairing_covered=covers(pairing_profiles["udp"]),
+        pairing_tcp_covered=covers(pairing_profiles["tcp"]),
     )
 
 
 def advise(status: FirewallStatus) -> Advice:
     """One sentence a non-technical person can act on, and the one button that fixes it."""
     port = status.port
+    pairing_udp = status.pairing_allowed and status.pairing_covered
+    pairing_tcp = status.pairing_tcp_allowed and status.pairing_tcp_covered
     rule_profiles = ("Private",) + (("Domain",) if "DomainAuthenticated" in status.lan_profiles else ())
     if status.error:
         return Advice(tr("Beamer could not read the Windows Firewall: {error}").format(error=status.error), tr("Check again"), "check")
     if status.blocked:
         advice = Advice(
-            tr("Windows Firewall is blocking Beamer on port {port}. This happens when Cancel was pressed on "
+            tr("Windows Firewall is blocking Beamer's input or pairing traffic. This can happen when Cancel was pressed on "
             "Windows' own \"allow this app\" prompt, and a block rule beats any allow rule, so reinstalling "
-            "does not clear it. Fixing it removes the block and adds the right rule for private networks.").format(port=port),
+            "does not clear it. Fixing it removes the block and adds the right rules for private networks."),
             tr("Fix the firewall"),
             "repair",
             rule_profiles,
@@ -202,10 +218,10 @@ def advise(status: FirewallStatus) -> Advice:
             "repair",
             rule_profiles,
         )
-    elif not status.covered and status.public_interfaces:
+    elif status.public_interfaces and not (status.covered and pairing_udp and pairing_tcp):
         names = ", ".join(alias for _, alias in status.public_interfaces if alias) or "this network"
         advice = Advice(
-            tr("Windows treats {names} as a public network, so Beamer's firewall rule does not apply on it and "
+            tr("Windows treats {names} as a public network, so some of Beamer's firewall rules do not cover it and "
             "your other machines cannot get in. Trusting it marks the network as private, which lets them in without "
             "opening the port on every other network this PC joins.").format(names=names),
             tr("Trust this network"),
@@ -220,23 +236,22 @@ def advise(status: FirewallStatus) -> Advice:
             "repair",
             rule_profiles,
         )
-    elif not status.pairing_allowed or not status.pairing_tcp_allowed:
+    elif not pairing_udp or not pairing_tcp:
         missing = []
-        if not status.pairing_allowed:
+        if not pairing_udp:
             missing.append((
                 f"the pairing beacon on UDP {PAIRING_PORT}",
                 "a machine that has not been set up by hand will never see this PC in its list, and this PC will not "
                 "hear other machines' pairing announcements",
             ))
-        if not status.pairing_tcp_allowed:
+        if not pairing_tcp:
             missing.append((
                 f"the pairing exchange on TCP {PAIRING_PORT}",
                 "a machine that finds this PC cannot finish pairing with it",
             ))
         advice = Advice(
-            tr("Windows Firewall lets your other machines reach Beamer on port {port}, but there is no rule for "
-            "{rules}, so {effects}. Installs made before these rules existed are missing them. Fixing it adds "
-            "what is missing and leaves the working rules alone.").format(
+            tr("Windows Firewall lets your other machines reach Beamer on port {port}, but there is no rule covering this network for "
+            "{rules}, so {effects}. Fixing it replaces Beamer's inbound firewall rules.").format(
                 port=port, rules=" or for ".join(rule for rule, _ in missing),
                 effects=" and ".join(effect for _, effect in missing)),
             tr("Fix the firewall"),

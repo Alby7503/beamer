@@ -6,6 +6,7 @@ import struct
 import threading
 import time
 import unittest
+from unittest import mock
 import zlib
 import os
 import sys
@@ -45,6 +46,9 @@ class FakePasteboard:
 
     def dataForType_(self, kind):
         return self.data.get(kind)
+
+    def types(self):
+        return list(self.data) + ([clipboard_mac.AppKit.NSPasteboardTypeString] if self.string is not None else [])
 
     def clearContents(self):
         self.cleared += 1
@@ -150,6 +154,75 @@ class ChangedContentsTests(unittest.TestCase):
             raise RuntimeError("image provider failed")
         self.board.dataForType_ = failed_image
         self.assertEqual(clipboard_mac.get_contents(), ("copied", None))
+
+    def test_strict_read_distinguishes_a_provider_failure_from_empty(self):
+        self.board.string = None
+        self.assertEqual(clipboard_mac.read_contents(), (None, None))
+        with mock.patch.object(self.board, "stringForType_", side_effect=OSError("provider busy")):
+            with self.assertRaises(OSError):
+                clipboard_mac.read_contents()
+            self.assertEqual(clipboard_mac.get_contents(), (None, None))
+        self.board.string = "copied"
+        self.assertEqual(clipboard_mac.read_contents(), ("copied", None))
+
+    def test_strict_read_preserves_valid_text_when_the_image_provider_fails(self):
+        with mock.patch.object(self.board, "dataForType_", side_effect=OSError("image busy")):
+            self.assertEqual(clipboard_mac.read_contents(), ("copied", None))
+
+    def test_strict_read_retries_advertised_text_returning_nil_at_a_stable_count(self):
+        count = self.board.count
+        with mock.patch.object(self.board, "stringForType_", side_effect=[None, "copied"]):
+            with self.assertRaises(OSError):
+                clipboard_mac.read_contents()
+            self.assertEqual(self.board.count, count)
+            self.assertEqual(clipboard_mac.read_contents(), ("copied", None))
+
+    def test_strict_read_retries_advertised_png_returning_nil(self):
+        AppKit = clipboard_mac.AppKit
+        self.board.string = None
+        self.board.data = {AppKit.NSPasteboardTypePNG: tiny_png()}
+        original = self.board.dataForType_
+        with mock.patch.object(self.board, "dataForType_", return_value=None):
+            with self.assertRaises(OSError):
+                clipboard_mac.read_contents()
+            self.assertEqual(clipboard_mac.get_contents(), (None, None))
+        self.assertEqual(clipboard_mac.read_contents(), (None, original(AppKit.NSPasteboardTypePNG)))
+
+    def test_strict_read_keeps_real_empty_text_and_an_unoffered_clipboard_terminal(self):
+        self.board.string = ""
+        self.assertEqual(clipboard_mac.read_contents(), (None, None))
+        self.board.string = None
+        self.assertEqual(clipboard_mac.read_contents(), (None, None))
+
+    def test_strict_read_retries_advertised_tiff_returning_nil(self):
+        AppKit = clipboard_mac.AppKit
+        self.board.string = None
+        self.board.data = {AppKit.NSPasteboardTypeTIFF: b"promised TIFF"}
+        with mock.patch.object(self.board, "dataForType_", return_value=None):
+            with self.assertRaises(OSError):
+                clipboard_mac.read_contents()
+            self.assertEqual(clipboard_mac.get_contents(), (None, None))
+
+    def test_strict_read_keeps_an_unsupported_tiff_terminal(self):
+        AppKit = clipboard_mac.AppKit
+        self.board.string = None
+        self.board.data = {AppKit.NSPasteboardTypeTIFF: b"not a TIFF"}
+        with mock.patch.object(AppKit, "NSBitmapImageRep", create=True) as codec, \
+                mock.patch.object(AppKit, "NSBitmapImageFileTypePNG", 0, create=True):
+            codec.imageRepWithData_.return_value = None
+            self.assertEqual(clipboard_mac.read_contents(), (None, None))
+            codec.imageRepWithData_.return_value = mock.Mock()
+            codec.imageRepWithData_.return_value.representationUsingType_properties_.return_value = None
+            self.assertEqual(clipboard_mac.read_contents(), (None, None))
+
+    def test_strict_read_rejects_a_pasteboard_that_never_stabilises(self):
+        def read(kind):
+            self.board.count += 1
+            return self.board.string
+        with mock.patch.object(self.board, "stringForType_", side_effect=read):
+            with self.assertRaises(OSError):
+                clipboard_mac.read_contents()
+            self.assertEqual(clipboard_mac.get_contents(), (None, None))
 
     def test_copy_during_read_retries_the_newest_stable_snapshot(self):
         original = self.board.stringForType_

@@ -32,7 +32,7 @@ MAX_BYTES = 64 * 1024 * 1024
 _synced: Optional[int] = None
 
 
-def _read_fd(fd: int, timeout: float = TIMEOUT_SECONDS) -> Optional[bytes]:
+def _read_fd(fd: int, timeout: float = TIMEOUT_SECONDS, *, strict=False) -> Optional[bytes]:
     """All an app writes into `fd` until it closes it, within `timeout`; None if it did not finish."""
     chunks = []
     size = 0
@@ -42,6 +42,8 @@ def _read_fd(fd: int, timeout: float = TIMEOUT_SECONDS) -> Optional[bytes]:
             left = deadline - time.monotonic()
             if left <= 0:
                 LOGGER.warning("The app holding the clipboard did not hand it over in time")
+                if strict:
+                    raise OSError("the clipboard transfer timed out")
                 return None
             ready, _, _ = select.select([fd], [], [], left)
             if not ready:
@@ -61,24 +63,35 @@ def _read_fd(fd: int, timeout: float = TIMEOUT_SECONDS) -> Optional[bytes]:
 def _read(mime: str) -> Optional[bytes]:
     fd = inject_portal.remote().ask(lambda session: session.open_selection(mime), discard=os.close)
     if fd is None:
-        return None
-    return _read_fd(fd)
+        raise OSError("the clipboard transfer could not be opened")
+    return _read_fd(fd, strict=True)
 
 
-def _offered() -> Tuple[list, bool, int]:
+def _offered() -> Optional[Tuple[list, bool, int]]:
     return inject_portal.remote().ask(lambda session: (list(session.offered), session.ours, session.changes),
-                                      default=([], False, 0))
+                                      default=None)
 
 
 def _contents(offered: list) -> Tuple[Optional[str], Optional[bytes]]:
     text = png = None
+    failed = False
     mime = next((m for m in TEXT_MIMES if m in offered), None)
     if mime is not None:
-        data = _read(mime)
-        if data:
-            text = data.decode("utf-8", "replace").replace("\r\n", "\n")
+        try:
+            data = _read(mime)
+            if data:
+                text = data.decode("utf-8", "replace").replace("\r\n", "\n")
+        except Exception:
+            failed = True
+            LOGGER.exception("Could not read the clipboard text")
     if PNG_MIME in offered:
-        png = _read(PNG_MIME) or None
+        try:
+            png = _read(PNG_MIME) or None
+        except Exception:
+            failed = True
+            LOGGER.exception("Could not read the clipboard image")
+    if failed and text is None and png is None:
+        raise OSError("the clipboard provider could not be read")
     return text or None, png
 
 
@@ -86,13 +99,19 @@ def get_contents() -> Tuple[Optional[str], Optional[bytes]]:
     """(text, png) another app has on the clipboard, either None when absent; both None when it
     is Beamer's own, or the clipboard cannot be reached. Never raises."""
     try:
-        offered, ours, _changes = _offered()
-        if ours:
-            return None, None
-        return _contents(offered)
+        return read_contents()
     except Exception:
         LOGGER.exception("Could not read the clipboard")
         return None, None
+
+
+def read_contents() -> Tuple[Optional[str], Optional[bytes]]:
+    """Like get_contents, but raise OSError if the portal or transfer is unavailable."""
+    offered = _offered()
+    if offered is None:
+        raise OSError("the portal clipboard is unavailable")
+    formats, ours, _changes = offered
+    return (None, None) if ours else _contents(formats)
 
 
 def changed_contents() -> Tuple[Optional[str], Optional[bytes]]:

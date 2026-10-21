@@ -273,6 +273,9 @@ def set_click_through(hwnd: int, through: bool) -> None:
 
 
 def _pointer_marker():
+    from core import portable_runtime
+    if portable_runtime.enabled():
+        return str(portable_runtime.data_path() / "pointer-hidden")
     base = os.environ.get("LOCALAPPDATA")
     return os.path.join(base, "Beamer", "pointer-hidden") if base else None
 

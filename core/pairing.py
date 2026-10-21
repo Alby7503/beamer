@@ -333,7 +333,7 @@ def peer_entry(identity: bytes, name: str, platform: str, port: int, token: str,
         "in_use": True,
         "side": "", "side_set_at": 0, "side_by": "", "paired_with": [], "paired_at": int(paired_at),
         "linked": False, "from_1_4": False,
-        # Pairing learnt this address; only one typed in Settings is a choice that discovery must not replace.
+        # Discovery and reverse pairing learn an address; a requester may pin a typed choice.
         "host_pinned": False,
     }
 
@@ -934,6 +934,23 @@ class PairingClient:
         """Version 3: the peer entry for the host, reached at `address`, once finish() has
         returned the token."""
         return peer_entry(self.host_identity, self.host_name, self.host_platform, self.host_port, self._token, address, self.wall())
+
+
+def discovery_endpoint(machine):
+    return machine.get("address"), machine.get("reply_port", PAIRING_PORT)
+
+
+def refreshed_discovery(machine, machines):
+    if machine is None:
+        return None
+    endpoint = discovery_endpoint(machine)
+    exact = next((item for item in machines if discovery_endpoint(item) == endpoint), None)
+    if exact is not None:
+        return exact
+    candidates = [item for item in machines
+                  if all(item.get(key) == machine.get(key) for key in ("address", "port", "name"))
+                  and not (machine.get("id") and item.get("id") and item["id"] != machine["id"])]
+    return candidates[0] if len(candidates) == 1 else None
 
 
 def _udp_socket(bind_port: int) -> socket.socket:
@@ -1649,9 +1666,12 @@ class Discovery:
     def _beacon_entry(self, message: dict, address):
         name = message.get("name")
         port = message.get("port")
+        pair_port = message.get("pair_port", address[1])
         pair_id = message.get("pair")
         version = message.get("pairing")
         if not isinstance(name, str) or isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
+            return None
+        if isinstance(pair_port, bool) or not isinstance(pair_port, int) or not 1 <= pair_port <= 65535:
             return None
         try:
             name.encode("utf-8")
@@ -1662,7 +1682,7 @@ class Discovery:
             "name": name[:64] or address[0],
             "address": address[0],
             "port": port,
-            "reply_port": address[1],
+            "reply_port": pair_port,
             "pair_id": pair_id if isinstance(pair_id, str) and pair_id.isascii() and 0 < len(pair_id) <= MAX_PAIR_ID_CHARS else None,
             # A beacon from 1.4.2 or earlier carries no number: that is version 1.
             "pairing": version if isinstance(version, int) and not isinstance(version, bool) else 1,
@@ -1671,7 +1691,14 @@ class Discovery:
 
     def _remember(self, address, entry: dict) -> None:
         with self._lock:
-            if address[0] not in self._seen and len(self._seen) >= MAX_SEEN_HOSTS:
+            # Routed replies use disposable source sockets; the advertised listener identifies
+            # the app, whilst pair_port keeps requests aimed at its live pairing socket.
+            endpoint = (address[0], entry["port"])
+            for key in [key for key, known in self._seen.items()
+                        if key != endpoint and key[0] == address[0]
+                        and known["reply_port"] == entry["reply_port"]]:
+                del self._seen[key]
+            if endpoint not in self._seen and len(self._seen) >= MAX_SEEN_HOSTS:
                 # The list is only read while the window is open, so what has gone quiet is
                 # cleared here too. Beacons from made-up addresses then cost a fixed amount of
                 # memory and no more.
@@ -1683,8 +1710,9 @@ class Discovery:
                     # can crowd real PCs off the list that way, which is a denial like any
                     # other here, so the one address the user typed is never the one to go.
                     wanted = self._finding[0] if self._finding else None
-                    del self._seen[min((key for key in self._seen if key != wanted), key=lambda key: self._seen[key]["seen_at"])]
-            self._seen[address[0]] = entry
+                    candidates = [key for key in self._seen if key[0] != wanted] or list(self._seen)
+                    del self._seen[min(candidates, key=lambda key: self._seen[key]["seen_at"])]
+            self._seen[endpoint] = entry
 
 
 def _shut(sock) -> None:
@@ -1843,6 +1871,7 @@ class PairingService(Discovery):
         self._nearby = None
         self._nearby_choice = False
         self._nearby_next = 0.0
+        self.active_discovery = False
 
     def begin_nearby(self) -> None:
         from .easy_pair import EasyPairWindow
@@ -2159,6 +2188,7 @@ class PairingService(Discovery):
         with self._host_lock:
             from .easy_pair import PAIR_MODES
             beacon = self.host.beacon(self.port_getter())
+            beacon["pair_port"] = self.bind_port
             beacon["pair_modes"] = PAIR_MODES.copy()
             if self._nearby is not None and self._nearby.active:
                 beacon["nearby"] = self._nearby.window
@@ -2176,6 +2206,8 @@ class PairingService(Discovery):
         for target in targets:
             try:
                 sock.sendto(beacon, target)
+                if self.active_discovery:
+                    sock.sendto(encode({"type": MSG_FIND}), target)
                 delivered += 1
             except OSError:
                 continue
@@ -2334,7 +2366,7 @@ class PairingService(Discovery):
             resolved = socket.getaddrinfo((address or "").strip(), port, socket.AF_INET, socket.SOCK_STREAM)[0][4][0]
         except (OSError, IndexError, UnicodeError) as exc:
             raise PairingError("no_answer") from exc
-        return self._pair_tcp(resolved, port, code, None)
+        return self._pair_tcp(resolved, port, code, None, pin_address=True)
 
     def pair_by_qr(self, text: str) -> dict:
         """The exchange over TCP from a QR's text, with its secret and `qr: 1`. A QR of a machine
@@ -2346,7 +2378,7 @@ class PairingService(Discovery):
         return PairingClient(pair_id, code, self.name, self.identity, version=PAIRING_V3, platform=self.platform,
                              port=self.port_getter(), qr_secret=secret, peers=self._peer_entries, wall=self.wall)
 
-    def _pair_tcp(self, address: str, port: int, code: str, secret) -> dict:
+    def _pair_tcp(self, address: str, port: int, code: str, secret, *, pin_address=False) -> dict:
         with self._attempt(code):
             peers = self._peer_entries()
             if len(peers) >= MAX_PEERS and not any(_dormant_repairable(peer) for peer in peers):
@@ -2380,7 +2412,7 @@ class PairingService(Discovery):
                     client.finish(_recv_frame(sock, deadline))
             except OSError as exc:
                 raise PairingError("no_answer") from exc
-            return self._keep(client, address)
+            return self._keep(client, address, pin_address=pin_address)
 
     def _not_paired_already(self, identity) -> None:
         """A QR of a machine this one has paired already: the caller tries its link at that
@@ -2394,13 +2426,15 @@ class PairingService(Discovery):
                 if not _dormant_repairable(known):
                     raise AlreadyPaired(known)
 
-    def _keep(self, client: PairingClient, address: str) -> dict:
+    def _keep(self, client: PairingClient, address: str, *, pin_address=False) -> dict:
         """The requester writes its entry once Td has checked out. The checks are made again,
         under the lock the host's side stores under, because this machine may have hosted or
         requested another pairing since: two at once must not pass 32 peers or share an id. A
         failed write leaves the host an entry that never links, which pairing again within ten
         minutes replaces."""
         entry = client.entry(address)
+        if pin_address and entry["host"]:
+            entry["host_pinned"] = True
         with self._host_lock:
             peers = self._peer_entries()
             known, replaced = _find_known(peers, self.identity, client.host_identity, client.host_name, client.host_platform, self.wall())

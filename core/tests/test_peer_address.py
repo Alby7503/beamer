@@ -2,7 +2,7 @@
 
 import unittest
 
-from core import protocol, receiver
+from core import pairing, peerlist, protocol, receiver
 from core.tests.test_link import FakeClock, Side
 from core.tests.responder_harness import HERE
 
@@ -75,6 +75,13 @@ class ChosenAddressTests(unittest.TestCase):
 
 class PairedAddressTests(unittest.TestCase):
     def test_pairing_saves_a_followable_address(self):
-        from core import pairing
         entry = pairing.peer_entry(bytes(16), "Far", "windows", 24820, "t", "192.0.2.10", 1)
         self.assertIs(entry["host_pinned"], False)
+
+    def test_repair_of_a_migrated_typed_address_keeps_it_pinned(self):
+        old = {"id": "", "name": "Far", "platform": "windows", "token": "old", "host": "192.0.2.10",
+               "port": 24820, "from_1_4": True}
+        settings = {"peers": [old], "zones": []}
+        repaired = pairing.peer_entry(bytes(16), "Far", "windows", 24820, "new", "192.0.2.10", 1)
+        peerlist.add_peer(settings, repaired, dict(old))
+        self.assertIs(repaired["host_pinned"], True)

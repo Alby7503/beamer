@@ -1,5 +1,7 @@
 """Brief, click-through display labels. All AppKit work stays on the main thread."""
 
+import time
+
 import AppKit
 from PyObjCTools import AppHelper
 
@@ -24,8 +26,13 @@ class IdentifyOverlay:
         self.logger = logger
         self.panels = []
         self._generation = 0
+        self._last_request_at = None
 
     def show(self, labels):
+        now = time.monotonic()
+        if self._last_request_at is not None and now - self._last_request_at < OVERLAY_SECONDS:
+            return
+        self._last_request_at = now
         self.hide()
         generation = self._generation
         try:

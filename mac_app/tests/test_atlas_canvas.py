@@ -623,7 +623,7 @@ class AtlasCanvas(Page):
 
         self.assertLess(canvas._map()[1], base_scale)
 
-    def test_small_tiles_hide_detail_and_centre_the_title(self):
+    def test_small_tiles_hide_detail_and_keep_title_clear_of_display_numbers(self):
         window = self.layout()
         canvas = window.atlas_canvas
         canvas.setFrame_(((0, 0), (480, canvas.HEIGHT)))
@@ -631,13 +631,18 @@ class AtlasCanvas(Page):
         canvas._draw(False)
         frame = canvas._map()[0][BEE]
 
-        self.assertLess(frame[3], 56)
+        self.assertLess(frame[3], 32)
         self.assertTrue(canvas.state_for_tile[BEE].isHidden())
         self.assertTrue(canvas.dot_for_tile[BEE].isHidden())
         self.assertTrue(canvas.outcome_for_tile[BEE].isHidden())
         title = canvas.label_for_tile[BEE].frame()
-        self.assertAlmostEqual(title.origin.y + title.size.height / 2,
-                               frame[1] + frame[3] / 2)
+        self.assertAlmostEqual(title.origin.y, frame[1] + 11)
+        self.assertGreater(title.size.width, 0)
+        self.assertTrue(AppKit.NSContainsRect(diagram._rect(frame), title))
+        badges = canvas.display_number_layers[BEE]
+        self.assertTrue(badges)
+        for badge in badges:
+            self.assertFalse(AppKit.NSIntersectsRect(title, badge.frame()))
 
     def test_edge_seam_lights_the_whole_contact_and_part_only_the_picked_thirds(self):
         window = self.layout()

@@ -135,6 +135,20 @@ class MachinesWindowTest(unittest.TestCase):
         row.directions.click()
         self.assertFalse(row.direction_group.isHidden())
 
+    def test_windows_receiving_switch_is_under_directions_even_when_receiving_is_off(self):
+        entry = peer(ID_A, "Other PC", TOKEN_A, "192.0.2.10", platform="windows")
+        entry["allow_drive"] = False
+        window = self.open(entry)
+        row = window.machines.rows[TOKEN_A]
+        self.assertTrue(row.direction_group.isHidden())
+        self.assertEqual(row.directions.text(), "Directions")
+        row.directions.click()
+        self.assertFalse(row.direction_group.isHidden())
+        self.assertEqual(row.allow.text(), "It drives this PC")
+        self.assertFalse(row.allow.isChecked())
+        row.allow.click()
+        self.assertTrue(self.settings()["peers"][0]["allow_drive"])
+
     def test_the_send_button_names_the_only_machine_in_use(self):
         window = self.open(peer(ID_A, "Studio Mac", TOKEN_A, "192.0.2.10"),
                            peer(ID_B, "Inactive", TOKEN_B, "192.0.2.11", in_use=False))
@@ -646,6 +660,20 @@ class PairingSheetWindowTest(unittest.TestCase):
         self.window.sheet.group.buttons()[0].click()
         self.window.sheet.set_machines([dict(first, pair_id="new")])
         self.assertEqual(self.window.sheet.chosen_machine()["pair_id"], "new")
+
+    def test_installed_and_portable_on_one_ip_keep_separate_selection(self):
+        installed = dict(self.STUDIO, pair_id="installed")
+        portable = dict(self.STUDIO, name="Studio (Portable)", port=53000,
+                        reply_port=53001, pair_id="portable")
+        sheet = self.window.sheet
+        sheet.set_machines([installed, portable])
+        sheet.group.buttons()[1].click()
+        self.assertEqual(sheet.chosen_machine(), portable)
+        refreshed = dict(portable, pair_id="new-portable")
+        sheet.set_machines([dict(installed, pair_id="new-installed"), refreshed])
+        self.assertEqual(sheet.chosen_machine(), refreshed)
+        sheet.group.buttons()[0].click()
+        self.assertEqual(sheet.chosen_machine()["pair_id"], "new-installed")
 
     def test_pair_stays_off_while_a_pairing_is_under_way(self):
         sheet = self.window.sheet

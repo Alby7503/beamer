@@ -567,6 +567,33 @@ class ComingHomeTests(Base):
 
 
 class ClipboardTests(Base):
+    def test_unsendable_clipboards_are_read_once_until_the_next_local_copy(self):
+        for text, image, caps in ((None, None, CAPS), ("", None, CAPS),
+                                  ("x" * (protocol.CLIPBOARD_MAX_BYTES + 1), None, CAPS),
+                                  (None, b"not a PNG", CAPS), ("unsupported", None, ())):
+            with self.subTest(text_length=len(text or ""), image=image, caps=caps):
+                self.setUp()
+                self.up(caps=caps)
+                self.clipboard.copy(text)
+                self.clipboard.image = image
+                with mock.patch.object(self.clipboard, "get_contents", wraps=self.clipboard.get_contents) as read:
+                    self.controller.set_redirecting(True)
+                    settle(self.controller)
+                    self.link.arrives(self.controller, protocol.accept_msg(self.controller.owner.route))
+                    self.controller.set_redirecting(False)
+                    settle(self.controller)
+                    self.controller.set_redirecting(True)
+                    settle(self.controller)
+                    self.link.arrives(self.controller, protocol.accept_msg(self.controller.owner.route))
+                    self.assertEqual(read.call_count, 1)
+                    self.assertNotIn(protocol.MSG_CLIPBOARD, self.link.types())
+                    self.clipboard.copy("new copy")
+                    self.controller._owner_tick()
+                    settle(self.controller)
+                    self.assertEqual(read.call_count, 2)
+                if "clipboard" in caps:
+                    self.assertEqual(self.link.posted[-1], protocol.clipboard_msg("new copy"))
+
     def test_a_read_finishing_after_home_never_posts_private_local_text(self):
         self.up()
         self.controller.set_redirecting(True)
@@ -619,7 +646,7 @@ class ClipboardTests(Base):
         self.controller.set_redirecting(True)
         settle(self.controller)
         self.link.arrives(self.controller, protocol.accept_msg(1))
-        for failure in ("read", "read_exception", "post", "post_exception"):
+        for failure in ("read_exception", "post", "post_exception"):
             with self.subTest(failure=failure):
                 text = "new local copy: " + failure
                 self.clipboard.copy(text)
@@ -630,7 +657,7 @@ class ClipboardTests(Base):
                     if len(calls) == 1:
                         if failure.endswith("exception"):
                             raise OSError("clipboard temporarily busy")
-                        return (None, None) if failure == "read" else False
+                        return False
                     return read() if failure.startswith("read") else post(*args)
                 target, name = (self.clipboard, "get_contents") if failure.startswith("read") else (self.link, "post")
                 with mock.patch.object(target, name, side_effect=attempt):
@@ -645,7 +672,7 @@ class ClipboardTests(Base):
         settle(self.controller)
         self.link.arrives(self.controller, protocol.accept_msg(1))
         self.clipboard.copy("temporarily unreadable")
-        with mock.patch.object(self.clipboard, "get_contents", return_value=(None, None)) as read:
+        with mock.patch.object(self.clipboard, "get_contents", side_effect=OSError("clipboard busy")) as read:
             self.controller._owner_tick()
             self.controller._step(lambda owner: owner.input({"type": "keydown", "data": {"key": "a"}}))
             settle(self.controller)
@@ -694,7 +721,7 @@ class ClipboardTests(Base):
     def test_a_failed_read_is_tried_again_on_the_next_crossing(self):
         self.up()
         read = self.clipboard.get_contents
-        self.clipboard.get_contents = lambda: (None, None)
+        self.clipboard.get_contents = mock.Mock(side_effect=OSError("clipboard busy"))
         self.controller.set_redirecting(True)
         settle(self.controller)
         self.link.arrives(self.controller, protocol.accept_msg(1))

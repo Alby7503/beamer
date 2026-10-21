@@ -83,5 +83,30 @@ class SetContentsTest(unittest.TestCase):
         self.assertEqual(clipboard_portal._synced, 5)
 
 
+class ReadContentsTest(unittest.TestCase):
+    def test_strict_read_distinguishes_an_unavailable_session_from_empty(self):
+        stub = StubRemote(ready=True)
+        stub.session.offered = []
+        stub.session.ours = False
+        with mock.patch.object(inject_portal, "remote", return_value=stub):
+            self.assertEqual(clipboard_portal.read_contents(), (None, None))
+        with mock.patch.object(inject_portal, "remote") as remote:
+            remote.return_value.ask.side_effect = lambda work, default=None, **kwargs: default
+            with self.assertRaises(OSError):
+                clipboard_portal.read_contents()
+            self.assertEqual(clipboard_portal.get_contents(), (None, None))
+
+    def test_strict_read_distinguishes_a_failed_transfer_from_empty_text(self):
+        with mock.patch.object(clipboard_portal, "_offered", return_value=(["text/plain"], False, 5)), \
+                mock.patch.object(inject_portal, "remote") as remote:
+            remote.return_value.ask.return_value = None
+            with self.assertRaises(OSError):
+                clipboard_portal.read_contents()
+            self.assertEqual(clipboard_portal.get_contents(), (None, None))
+        with mock.patch.object(clipboard_portal, "_offered", return_value=(["text/plain"], False, 5)), \
+                mock.patch.object(clipboard_portal, "_read", return_value=b""):
+            self.assertEqual(clipboard_portal.read_contents(), (None, None))
+
+
 if __name__ == "__main__":
     unittest.main()

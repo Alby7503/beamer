@@ -201,6 +201,7 @@ class BeaconTests(unittest.TestCase):
     def test_id_and_pair_only_while_a_code_is_up(self):
         idle = self._next_beacon()
         self.assertEqual(idle, {"beamy": 1, "type": "beacon", "name": "Beacon PC", "port": 24820, "pairing": 3,
+                               "pair_port": self.pc.service.bind_port,
                                 "platform": "windows", "pair_modes": ["cpace_v3", "sas_v1"]})
         self.pc.service.begin_pairing()
         live = self._next_beacon()
@@ -251,6 +252,19 @@ class TcpTests(unittest.TestCase):
         self.assertEqual((saved["host"], saved["port"], saved["id"]), ("127.0.0.1", 24820, pairing._b64(PC_ID)))
         self.assertEqual(self.pc.book.entries[0]["host"], "127.0.0.1")
         self.assertEqual(self.pc.service.outcome, "paired")
+
+    def test_a_typed_pairing_address_is_pinned_before_it_is_saved(self):
+        code = self.pc.service.begin_pairing()
+        saved = self.mac.service.pair_by_address("127.0.0.1", code, port=self.pc.tcp_port)
+        self.assertIs(saved["host_pinned"], True)
+        self.assertIs(self.mac.book.stored[-1][0]["host_pinned"], True)
+        self.assertTrue(wait_until(lambda: self.pc.paired))
+        self.assertIs(self.pc.book.entries[0]["host_pinned"], False)
+
+    def test_a_qr_pairing_keeps_its_learnt_address_followable(self):
+        self.pc.service.begin_pairing()
+        saved = self.mac.service.pair_by_qr(self.pc.service.qr_text("127.0.0.1"))
+        self.assertIs(saved["host_pinned"], False)
 
     def test_the_requester_replaces_the_1_4_entry_held_at_that_address(self):
         old = {"id": "", "name": "Old PC", "platform": "windows", "token": "typed-in-1.4", "host": "127.0.0.1",

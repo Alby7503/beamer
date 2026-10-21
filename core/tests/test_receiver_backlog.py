@@ -245,9 +245,13 @@ class InboxTests(unittest.TestCase):
     def test_relative_travel_is_preserved_with_the_latest_sequence(self):
         self.assertEqual(self.moves([(2, 0, 1), (3, 0, 2), (4, 0, 3)]), [(9, 0, 3)])
 
-    def test_reversals_and_axis_changes_do_not_create_or_erase_edge_pushes(self):
+    def test_mixed_axes_and_diagonal_jitter_merge_without_losing_travel(self):
+        self.assertEqual(self.moves([(2, 0, 1), (0, 3, 2), (4, 1, 3)]), [(6, 4, 3)])
+
+    def test_reversals_retain_their_geometry_samples(self):
         self.assertEqual(self.moves([(120, 0, 1), (0, 120, 2), (0, -120, 3)]),
-                         [(120, 0, 1), (0, 120, 2), (0, -120, 3)])
+                         [(120, 0, 3)])
+        self.assertEqual(self.link.inbox[0][0]["data"]["samples"], [[120, 0], [0, 120], [0, -120]])
 
     def test_delta_overflow_and_decreasing_sequences_stay_separate(self):
         self.assertEqual(self.moves([(65535, 0, 2), (1, 0, 3), (2, 0, 1)]),
@@ -259,13 +263,13 @@ class InboxTests(unittest.TestCase):
                 self.link.closed.clear()
                 self.link.inbox.clear()
                 self.link.inbox_bytes = 0
-                self.link.receive(protocol.mousemove_msg(1, 0, 1), 80)
+                self.link.receive(protocol.mousemove_msg(protocol.MOVE_MAX, 0, 1), 80)
                 result = []
                 entered = threading.Event()
 
                 def receive():
                     entered.set()
-                    result.append(self.link.receive(protocol.mousemove_msg(-1, 0, 2), 80))
+                    result.append(self.link.receive(protocol.mousemove_msg(1, 0, 2), 80))
 
                 reader = threading.Thread(target=receive)
                 reader.start()

@@ -44,6 +44,8 @@ if _IS_WINDOWS:
     user32.EmptyClipboard.argtypes = []
     user32.GetClipboardData.restype = ctypes.c_void_p
     user32.GetClipboardData.argtypes = [ctypes.c_uint]
+    user32.IsClipboardFormatAvailable.restype = ctypes.c_int
+    user32.IsClipboardFormatAvailable.argtypes = [ctypes.c_uint]
     user32.SetClipboardData.restype = ctypes.c_void_p
     user32.SetClipboardData.argtypes = [ctypes.c_uint, ctypes.c_void_p]
     kernel32.GlobalAlloc.restype = ctypes.c_void_p
@@ -232,10 +234,12 @@ def _read_clipboard_text(win32, mem32):
     if there is none. Caller holds the clipboard open."""
     handle = win32.GetClipboardData(CF_UNICODETEXT)
     if not handle:
+        if win32.IsClipboardFormatAvailable(CF_UNICODETEXT):
+            raise OSError("the clipboard text provider could not be read")
         return None
     pointer = mem32.GlobalLock(handle)
     if not pointer:
-        return None
+        raise OSError("the clipboard text could not be locked")
     try:
         text = ctypes.wstring_at(pointer)
     finally:
@@ -249,11 +253,15 @@ def _read_clipboard_dib(win32, mem32):
     or CF_DIBV5 source, so this one format covers them all."""
     handle = win32.GetClipboardData(CF_DIB)
     if not handle:
+        if win32.IsClipboardFormatAvailable(CF_DIB):
+            raise OSError("the clipboard image provider could not be read")
         return None
     size = mem32.GlobalSize(handle)
+    if not size:
+        raise OSError("the clipboard image size could not be read")
     pointer = mem32.GlobalLock(handle)
-    if not pointer or not size:
-        return None
+    if not pointer:
+        raise OSError("the clipboard image could not be locked")
     try:
         return ctypes.string_at(pointer, size)
     finally:
@@ -282,19 +290,25 @@ def _put_clipboard_data(win32, mem32, clipboard_format, payload):
     return True
 
 
-def _get_contents(win32, mem32, attempts=OPEN_RETRY_ATTEMPTS, delay=OPEN_RETRY_DELAY_SECONDS, sleep=time.sleep):
+def _get_contents(win32, mem32, attempts=OPEN_RETRY_ATTEMPTS, delay=OPEN_RETRY_DELAY_SECONDS, sleep=time.sleep,
+                  strict=False):
     if not _open_clipboard(win32, attempts, delay, sleep):
         LOGGER.warning("could not open the clipboard for reading")
+        if strict:
+            raise OSError("could not open the clipboard for reading")
         return None, None
+    failed = False
     try:
         try:
             text = _read_clipboard_text(win32, mem32)
         except Exception:
+            failed = True
             LOGGER.exception("failed to read clipboard text")
             text = None
         try:
             dib = _read_clipboard_dib(win32, mem32)
         except Exception:
+            failed = True
             LOGGER.exception("failed to read the clipboard image")
             dib = None
     finally:
@@ -302,7 +316,10 @@ def _get_contents(win32, mem32, attempts=OPEN_RETRY_ATTEMPTS, delay=OPEN_RETRY_D
     # Converted after the clipboard is closed: a Retina-sized DIB takes
     # tens of milliseconds to encode and nothing else can use the clipboard
     # while it is held.
-    return text, dib_to_png(dib) if dib is not None else None
+    png = dib_to_png(dib) if dib is not None else None
+    if strict and failed and text is None and png is None:
+        raise OSError("the clipboard provider could not be read")
+    return text, png
 
 
 def _set_contents(win32, mem32, text, png, attempts=OPEN_RETRY_ATTEMPTS, delay=OPEN_RETRY_DELAY_SECONDS, sleep=time.sleep, written=None):
@@ -341,18 +358,27 @@ def _set_contents(win32, mem32, text, png, attempts=OPEN_RETRY_ATTEMPTS, delay=O
         win32.DestroyWindow(owner)
 
 
-def get_contents() -> Tuple[Optional[str], Optional[bytes]]:
+def get_contents(*, strict=False) -> Tuple[Optional[str], Optional[bytes]]:
     """(text, png) from the Windows clipboard, either None when absent, both
     None if this isn't Windows or reading failed for any reason. Never
     raises."""
     if not _IS_WINDOWS:
+        if strict:
+            raise OSError("the Windows clipboard is unavailable")
         return None, None
     try:
         with _LOCK:
-            return _get_contents(user32, kernel32)
-    except Exception:
+            return _get_contents(user32, kernel32, strict=strict)
+    except Exception as exc:
         LOGGER.exception("failed to read the Windows clipboard")
+        if strict:
+            raise OSError("failed to read the Windows clipboard") from exc
         return None, None
+
+
+def read_contents() -> Tuple[Optional[str], Optional[bytes]]:
+    """Like get_contents, but raise OSError on failure so a caller can retry an unchanged copy."""
+    return get_contents(strict=True)
 
 
 def changed_contents() -> Tuple[Optional[str], Optional[bytes]]:

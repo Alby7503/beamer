@@ -80,7 +80,7 @@ ROUND_TRIP_MAX_AGE_SECONDS = 5.0
 # the ownership by force after one second), then goes ahead.
 LET_GO_WAIT_SECONDS = 1.3
 OWN_PLATFORM = "macos"
-CAPABILITIES = ("clipboard", "clipboard_image", "gestures", "media_keys", "text", "settings", "design_sync", "layout", "profiles", "displays", "ping_rtt", "identify_screens")
+CAPABILITIES = ("clipboard", "clipboard_image", "gestures", "media_keys", "text", "settings", "design_sync", "layout", "profiles", "displays", "ping_rtt", "identify_screens", "motion_path")
 MEDIA_KEY_NAMES = frozenset({"volume_mute", "volume_down", "volume_up", "media_next", "media_prev", "media_stop", "media_play_pause", "brightness_up", "brightness_down"})
 
 # Why input came home, in words, for the alert. A why that is not here comes home quietly.
@@ -2706,10 +2706,10 @@ class KVMController:
                 except Exception:
                     if attempt == 2:
                         self.logger.exception("the clipboard could not be sent")
-                if sent:
+                if sent is not False:
                     break
         finally:
-            if not sent:
+            if sent is False:
                 with self._owner_lock:
                     self.owner.clipboard_failed(peer)
         while True:
@@ -2928,22 +2928,23 @@ class KVMController:
         """Read this Mac's clipboard and send it as a clipboard message. Text over CLIPBOARD_MAX_BYTES
         and an image protocol.png_fits refuses are each dropped on their own, so an oversized
         screenshot still lets its text through; with nothing left nothing is sent. Nothing is sent
-        either when `waiting` was dropped with its link while the pasteboard was read."""
+        either when `waiting` was dropped with its link while the pasteboard was read.
+        True means posted, None means no supported content, and False means failed or cancelled."""
         if self._peers_up.get(peer) is None:
-            return
+            return False
         if generation is not None and (self.owner.on != peer or self.owner._visit_route != generation or
                                        (stamp is not None and self._clipboard_stamp_now() != stamp)):
-            return
-        text, image = self.clipboard.get_contents()
+            return False
+        text, image = getattr(self.clipboard, "read_contents", self.clipboard.get_contents)()
         if generation is not None and (self.owner.on != peer or self.owner._visit_route != generation or
                                        (stamp is not None and self._clipboard_stamp_now() != stamp)):
-            return
+            return False
         with self._clip_lock:
             if self._clip_wait.get(peer) is not waiting:
-                return
+                return False
         link = self._peers_up.get(peer)
         if link is None:
-            return
+            return False
         caps = getattr(link, "caps", ()) or ()
         if text and ("clipboard" not in caps or len(text.encode("utf-8")) > protocol.CLIPBOARD_MAX_BYTES):
             if "clipboard" in caps:
@@ -2955,7 +2956,7 @@ class KVMController:
             image = None
         if not text and image is None:
             self.logger.debug("local clipboard is empty; not sending it")
-            return
+            return None
         return link.post(protocol.clipboard_msg(text or None, image))
 
     def _set_clipboard(self, message):

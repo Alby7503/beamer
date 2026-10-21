@@ -51,7 +51,7 @@ NOT_SHOWN = {
     "pack", "warning", "append", "__init__", "find_library", "setValue_forHTTPHeaderField_",
     "loadBundle", "lookUpClass", "protocolNamed", "normalize", "lookup", "len",
     "dispatch", "ExecMethod_", "Methods_", "persistentDomainForName_",
-    "beginActivityWithOptions_reason_", "asset_path", "CreateMutexW", "QKeySequence",
+    "beginActivityWithOptions_reason_", "asset_path", "CreateMutexW", "OpenMutexW", "QKeySequence",
     "_turn_off_clashes", "exception", "_force_local", "stringForKey_", "open_dbus_connection", "update",
     "require_version", "_log_helper_failure",
 }
@@ -186,6 +186,19 @@ class I18nCoverageTests(unittest.TestCase):
         with mock.patch.object(Path, "read_text", return_value=source):
             found = hard_coded(path)
         self.assertEqual(found, ["win_app/clipboard_win.py:1: CreateWindowExW('Visible title')"])
+
+    def test_open_mutex_name_is_internal_but_message_box_text_is_visible(self):
+        path = ROOT / "win_app/portable_entry.py"
+        source = (
+            'ctypes.windll.kernel32.OpenMutexW(0, False, "Local\\\\Beamer.Receiver")\n'
+            'ctypes.windll.user32.MessageBoxW(None, "Visible body", "Visible title", 0x10)'
+        )
+        with mock.patch.object(Path, "read_text", return_value=source):
+            found = hard_coded(path)
+        self.assertEqual(found, [
+            "win_app/portable_entry.py:2: MessageBoxW('Visible body')",
+            "win_app/portable_entry.py:2: MessageBoxW('Visible title')",
+        ])
 
     def test_no_hard_coded_user_visible_strings(self):
         found = [line for path in source_files() for line in hard_coded(path)]

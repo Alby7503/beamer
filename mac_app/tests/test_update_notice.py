@@ -39,6 +39,21 @@ class UpdateNoticeTest(fixture.Page):
         self.assertTrue(window.update_notice.view.isHidden())
         self.assertIsNone(window.update_url)
 
+    def test_switching_off_clears_the_tray_download_action(self):
+        window = self.build([])
+        header = SimpleNamespace(title="", set_callback=lambda callback: setattr(header, "callback", callback))
+        tray = SimpleNamespace(controller=self.controller, control_window=window, header_item=header,
+                               open_update=lambda _sender: None, update_url=None)
+        window.update_handler = lambda found: kvm.TrayApp._update_found(tray, found)
+        window.update_handler(FOUND)
+        self.assertIsNotNone(header.callback)
+        window._set_check_updates(False)
+        self.assertIsNone(tray.update_url)
+        self.assertIsNone(header.callback)
+        self.assertNotIn("available", header.title)
+        window.update_handler(FOUND)
+        self.assertIsNone(header.callback)
+
     def test_whats_new_opens_the_release_only_on_a_click(self):
         window = self.build([])
         workspace = mock.Mock()

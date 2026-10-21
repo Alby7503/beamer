@@ -278,7 +278,7 @@ def _rename_zones(zones, old, new):
     return [{**zone, "peer": new} if zone.get("peer") == old else zone for zone in zones]
 
 
-def _merge_config(base, cfg):
+def _merge_config(base, cfg, *, pin_address=False):
     """`base` with `cfg`'s pairing fields in the first desktop and the rest by name."""
     settings = copy.deepcopy(base)
     raw = config_to_raw(cfg)
@@ -314,6 +314,9 @@ def _merge_config(base, cfg):
         if cfg.host != peer.get("host"):
             peer.update(name=cfg.pc_name, hw=cfg.mac_address, host_pinned=True)
         peer.update(host=cfg.host, port=cfg.port, send=cfg.send_to_windows, allow_drive=cfg.allow_windows_to_drive)
+    chosen = peerlist.first_desktop(peers)
+    if pin_address and chosen is not None and chosen.get("host"):
+        chosen["host_pinned"] = True
     settings["crossing"] = {
         name: value for name, value in crossing.items() if not (peerlist.first_desktop(peers) is not None and name in MOVED_CROSSING)
     }
@@ -467,7 +470,7 @@ class SettingsStore:
                 self.save_settings(outcome["settings"])
             return outcome["changed"], []
 
-    def save(self, raw, settings_changes=None, remove_settings=()):
+    def save(self, raw, settings_changes=None, remove_settings=(), *, pin_address=False):
         try:
             cfg = config_module.parse_config(raw)
         except (config_module.ConfigError, TypeError, ValueError, OverflowError) as exc:
@@ -487,7 +490,7 @@ class SettingsStore:
                 base.update(copy.deepcopy(settings_changes))
             for key in remove_settings:
                 base.pop(key, None)
-            return self._config(self.save_settings(_merge_config(base, cfg)))
+            return self._config(self.save_settings(_merge_config(base, cfg, pin_address=pin_address)))
 
     @staticmethod
     def _without_stale_pairing(cfg, base, handed):

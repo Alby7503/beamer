@@ -74,7 +74,8 @@ class IdentifyOverlayTests(unittest.TestCase):
             controller._fallback()
             native.assert_not_called()
 
-    def test_flags_geometry_repeated_invocation_and_three_second_expiry(self):
+    @patch("time.monotonic", return_value=0.0)
+    def test_flags_geometry_repeat_does_not_replace_or_extend_three_second_expiry(self, clock):
         controller = identify_overlay.IdentifyScreens()
         self.addCleanup(controller.stop)
         screen = self.app.primaryScreen()
@@ -90,12 +91,45 @@ class IdentifyOverlayTests(unittest.TestCase):
         self.assertTrue(first.testAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating))
         self.assertTrue(first.testAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents))
         self.assertEqual(controller._expiry.interval(), 3000)
-        controller.show_numbers({"0": 2}, display)
-        self.assertFalse(first.isVisible())
+        clock.return_value = 2.9
+        remaining = controller._expiry.remainingTime()
+        for _ in range(100):
+            controller.show_numbers({"0": 2}, display)
+        self.assertIs(controller.windows[0], first)
+        self.assertTrue(first.isVisible())
         self.assertEqual(len(controller.windows), 1)
-        self.assertEqual(controller.windows[0].number, 2)
+        self.assertEqual(controller.windows[0].number, 1)
+        self.assertLessEqual(controller._expiry.remainingTime(), remaining)
         QTest.qWait(3150)
         self.assertFalse(controller.windows)
+        clock.return_value = 3.0
+        controller.show_numbers({"0": 2}, display)
+        self.assertEqual(controller.windows[0].number, 2)
+
+    @patch("time.monotonic", return_value=0.0)
+    def test_wayland_helper_flood_is_limited_even_after_failure_and_stop(self, clock):
+        controller = identify_overlay.IdentifyScreens()
+        self.addCleanup(controller.stop)
+        screen = self.fake_screen(0, 0)
+        with patch.object(identify_overlay.QGuiApplication, "platformName", return_value="wayland"), \
+                patch.object(identify_overlay.QGuiApplication, "screens", return_value=[screen]), \
+                patch.object(identify_overlay.sys, "platform", "linux"), \
+                patch.dict(identify_overlay.os.environ, {"DISPLAY": ""}), \
+                patch.object(controller, "_start_layer_shell") as start:
+            controller.show_numbers({"0": 1}, {"0": Rect(0, 0, 1920, 1080)})
+            controller._backend = "layer-shell"
+            process = Mock()
+            process.readAllStandardError.return_value = b"unavailable"
+            controller._process = process
+            controller._helper_finished(process)
+            controller.stop()
+            clock.return_value = 2.9
+            for _ in range(100):
+                controller.show_numbers({"0": 2}, {"0": Rect(0, 0, 1920, 1080)})
+            self.assertEqual(start.call_count, 1)
+            clock.return_value = 3.0
+            controller.show_numbers({"0": 2}, {"0": Rect(0, 0, 1920, 1080)})
+            self.assertEqual(start.call_count, 2)
 
     def test_helper_failed_start_and_timeout_both_fall_back(self):
         controller = identify_overlay.IdentifyScreens()
@@ -205,6 +239,46 @@ class IdentifyPageTests(unittest.TestCase):
     _open_window = fixture.CrossingPageParityTests._open_window
     _close_window = fixture.CrossingPageParityTests._close_window
     _stop_patches = fixture.CrossingPageParityTests._stop_patches
+
+    def test_both_receive_links_ignore_phone_and_unknown_peer_before_overlay(self):
+        window = self.window
+        desktop = protocol.read_id(self.peers[0]["id"])
+        phone, unknown = bytes([90]) * 16, bytes([91]) * 16
+        peers = self.peers + [{"id": protocol.id_text(phone), "port": 0}]
+        with patch.object(window.book, "peers", return_value=peers), \
+                patch.object(window.identify_screens, "show_numbers") as show:
+            for callback in (window.sender.identify_callback, window.server._callbacks["identify"]):
+                with self.subTest(callback=callback):
+                    callback(phone, {"0": 1})
+                    callback(unknown, {"0": 1})
+                    QApplication.processEvents()
+                    show.assert_not_called()
+                    callback(desktop, {"0": 1})
+                    QApplication.processEvents()
+                    show.assert_called_once()
+                    show.reset_mock()
+
+    @patch("time.monotonic", return_value=0.0)
+    def test_local_button_and_both_receive_links_share_overlay_limit(self, clock):
+        window = self.window
+        peer = protocol.read_id(self.peers[0]["id"])
+        geometry = self.app.primaryScreen().geometry()
+        displays = {"0": Rect(geometry.x(), geometry.y(), geometry.width(), geometry.height())}
+        with patch.object(window, "_peer_caps", return_value={}), \
+                patch.object(window, "_displays_changed"), \
+                patch.object(window, "_refresh_own_displays"), \
+                patch.object(window, "_own_displays", return_value=displays), \
+                patch.object(window.identify_screens, "_show_qt") as show:
+            window._identify_screens()
+            clock.return_value = 2.9
+            for callback in (window.sender.identify_callback, window.server._callbacks["identify"]):
+                callback(peer, {"0": 1})
+            window._identify_screens()
+            QApplication.processEvents()
+            self.assertEqual(show.call_count, 1)
+            clock.return_value = 3.0
+            window._identify_screens()
+            self.assertEqual(show.call_count, 2)
 
     def test_button_identifies_local_and_all_capable_linked_peers(self):
         window = self.window

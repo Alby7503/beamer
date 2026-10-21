@@ -64,6 +64,18 @@ def visible_notice(found, enabled, dismissed):
     return found if enabled and found and found[0] != dismissed else None
 
 
+def _portable_download(version, payload):
+    name = f"Beamer-Portable-{version}-windows-x64.zip"
+    url = f"https://github.com/kalkman-code/beamer/releases/download/v{version}/{name}"
+    assets = payload.get("assets")
+    if isinstance(assets, list):
+        for asset in assets:
+            if (isinstance(asset, dict) and asset.get("name") == name
+                    and asset.get("browser_download_url") == url):
+                return url
+    return None
+
+
 def fetch(url=LATEST_URL):
     """The response body as bytes. The Mac goes through Foundation, which trusts the system's
     certificates; a bundled Python has no certificate store of its own there."""
@@ -90,13 +102,15 @@ class Checker:
     calls `on_result((version, url) or None)` on that thread after each check that got an answer;
     the owner marshals it. A failed check keeps the last answer and logs once."""
 
-    def __init__(self, current, enabled, on_result, fetcher=fetch, logger=None):
+    def __init__(self, current, enabled, on_result, fetcher=fetch, logger=None, portable=False):
         self.current = current
         self.enabled = enabled
         self.on_result = on_result
         self.fetcher = fetcher
         self.logger = logger or LOGGER
+        self.portable = portable
         self.latest = None
+        self.download_url = None
         self._wake = threading.Event()
         self._stop = threading.Event()
         self._thread = None
@@ -129,6 +143,8 @@ class Checker:
         if not self.enabled() or self._stop.is_set():
             return
         self.latest = newer_release(self.current, payload)
+        self.download_url = (_portable_download(self.latest[0], payload)
+                             if self.portable and self.latest else None)
         if self.latest:
             self.logger.info("Beamer %s is available", self.latest[0])
         try:

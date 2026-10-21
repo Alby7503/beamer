@@ -1214,6 +1214,7 @@ class ControlWindow(AppKit.NSObject):
         # made during this run needs a relaunch before the keyboard crosses, however ready the tap looks.
         self.granted_at_launch = accessibility_granted() and input_monitoring_granted()
         self.update_checker = None
+        self.update_handler = None
         self._update = None
         # The list of paired machines and the pairing sheet; TrayApp gives it the pairing service.
         self.panel = machines_panel.MachinesPanel(controller, settings_store, logger, self)
@@ -2933,7 +2934,7 @@ class ControlWindow(AppKit.NSObject):
         if on and self.update_checker is not None:
             self.update_checker.check_now()
         if not on:
-            self.show_update(None)
+            (self.update_handler or self.show_update)(None)
 
     @objc.python_method
     def show_update(self, found):
@@ -4572,7 +4573,7 @@ class ControlWindow(AppKit.NSObject):
                 # What was learned belonged to the old address.
                 raw["pc_name"] = ""
                 raw["mac_address"] = ""
-            cfg = self.settings_store.save(raw)
+            cfg = self.settings_store.save(raw, pin_address=True)
         except (SettingsError, TypeError, ValueError) as exc:
             self._say(str(exc), "fault")
             return
@@ -5111,6 +5112,7 @@ class TrayApp(rumps.App):
             lambda found: AppHelper.callAfter(self._update_found, found), logger=logger,
         )
         self.control_window.update_checker = self.update_checker
+        self.control_window.update_handler = self._update_found
         self._notch_failed = False
         self.header_item = header = _tray_item(f"Beamer {VERSION}", callback=None)
         self.update_url = None

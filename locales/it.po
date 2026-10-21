@@ -4198,6 +4198,10 @@ msgid "Check again"
 msgstr "Controlla di nuovo"
 
 #: win_app/firewall_win.py
+msgid "Windows Firewall is blocking Beamer's input or pairing traffic. This can happen when Cancel was pressed on Windows' own \"allow this app\" prompt, and a block rule beats any allow rule, so reinstalling does not clear it. Fixing it removes the block and adds the right rules for private networks."
+msgstr "Windows Firewall sta bloccando il traffico di input o di abbinamento di Beamer. Può succedere se è stato premuto Annulla nella richiesta di Windows «Consenti l'accesso» per l'app: una regola di blocco prevale su qualsiasi regola di autorizzazione, quindi reinstallare non risolve il problema. La correzione rimuove il blocco e aggiunge le regole corrette per le reti private."
+
+#: win_app/firewall_win.py
 msgid "Fix the firewall"
 msgstr "Correggi il firewall"
 
@@ -4205,11 +4209,6 @@ msgstr "Correggi il firewall"
 #, python-brace-format
 msgid "Beamer could not read the Windows Firewall: {error}"
 msgstr "Beamer non è riuscito a leggere Windows Firewall: {error}"
-
-#: win_app/firewall_win.py
-#, python-brace-format
-msgid "Windows Firewall is blocking Beamer on port {port}. This happens when Cancel was pressed on Windows' own \"allow this app\" prompt, and a block rule beats any allow rule, so reinstalling does not clear it. Fixing it removes the block and adds the right rule for private networks."
-msgstr "Windows Firewall blocca Beamer sulla porta {port}. Succede quando si preme Annulla nella richiesta di Windows \"consenti questa app\", e una regola di blocco prevale su qualsiasi regola di consenso, quindi reinstallare non la elimina. La correzione rimuove il blocco e aggiunge la regola giusta per le reti private."
 
 #: win_app/firewall_win.py
 msgid "Trust this network"
@@ -4227,8 +4226,8 @@ msgstr "Windows Firewall non ha una regola che consenta agli altri tuoi computer
 
 #: win_app/firewall_win.py
 #, python-brace-format
-msgid "Windows treats {names} as a public network, so Beamer's firewall rule does not apply on it and your other machines cannot get in. Trusting it marks the network as private, which lets them in without opening the port on every other network this PC joins."
-msgstr "Windows considera {names} una rete pubblica, quindi la regola del firewall di Beamer non vale lì e gli altri tuoi computer non possono entrare. Considerarla attendibile la contrassegna come privata, e li lascia entrare senza aprire la porta su ogni altra rete a cui si collega questo PC."
+msgid "Windows treats {names} as a public network, so some of Beamer's firewall rules do not cover it and your other machines cannot get in. Trusting it marks the network as private, which lets them in without opening the port on every other network this PC joins."
+msgstr "Windows considera {names} una rete pubblica, quindi alcune regole del firewall di Beamer non la coprono e gli altri tuoi computer non possono accedere. Considerandola attendibile, la rete diventa privata: così possono accedere senza aprire la porta su tutte le altre reti a cui questo PC si collega."
 
 #: win_app/firewall_win.py
 msgid "this private network"
@@ -4245,8 +4244,8 @@ msgstr "La regola del firewall di Beamer non vale su questa rete (Windows la chi
 
 #: win_app/firewall_win.py
 #, python-brace-format
-msgid "Windows Firewall lets your other machines reach Beamer on port {port}, but there is no rule for {rules}, so {effects}. Installs made before these rules existed are missing them. Fixing it adds what is missing and leaves the working rules alone."
-msgstr "Windows Firewall consente agli altri tuoi computer di raggiungere Beamer sulla porta {port}, ma non c'è una regola per {rules}, quindi {effects}. Le installazioni precedenti a queste regole ne sono prive. La correzione aggiunge ciò che manca e lascia invariate le regole funzionanti."
+msgid "Windows Firewall lets your other machines reach Beamer on port {port}, but there is no rule covering this network for {rules}, so {effects}. Fixing it replaces Beamer's inbound firewall rules."
+msgstr "Windows Firewall consente agli altri tuoi computer di raggiungere Beamer sulla porta {port}, ma nessuna regola copre questa rete per {rules}, quindi {effects}. La correzione sostituisce le regole in entrata del firewall di Beamer."
 
 #: win_app/firewall_win.py
 #, python-brace-format
@@ -4554,6 +4553,22 @@ msgid "On this PC"
 msgstr "Su questo PC"
 
 #: win_app/kvm_bridge_win.py
+msgid "Protect Beamer Portable"
+msgstr "Proteggi Beamer Portable"
+
+#: win_app/kvm_bridge_win.py
+msgid "Unlock Beamer Portable"
+msgstr "Sblocca Beamer Portable"
+
+#: win_app/kvm_bridge_win.py
+msgid "Choose a passphrase of at least 12 characters. You need it each time Beamer starts. It protects pairing keys if this folder is lost. A forgotten passphrase cannot be recovered."
+msgstr "Scegli una frase segreta di almeno 12 caratteri. Ti servirà a ogni avvio di Beamer. Protegge le chiavi di abbinamento se perdi questa cartella. Una frase segreta dimenticata non può essere recuperata."
+
+#: win_app/kvm_bridge_win.py
+msgid "Enter the passphrase for this portable folder."
+msgstr "Inserisci la frase segreta di questa cartella portatile."
+
+#: win_app/kvm_bridge_win.py
 msgid "Beamer requests keyboard and pointer access when each Wayland session starts."
 msgstr "Beamer chiede l'accesso a tastiera e puntatore all'inizio di ogni sessione Wayland."
 
@@ -4564,6 +4579,10 @@ msgstr "Non richiesto"
 #: win_app/kvm_bridge_win.py
 msgid "Ask again"
 msgstr "Chiedi di nuovo"
+
+#: win_app/kvm_bridge_win.py
+msgid "Download portable zip"
+msgstr "Scarica lo zip portatile"
 
 #: win_app/kvm_bridge_win.py
 msgid "Input:"
@@ -4641,6 +4660,18 @@ msgid "Not known yet"
 msgstr "Non ancora noto"
 
 #: win_app/kvm_bridge_win.py
+msgid "Portable mode leaves Windows Firewall unchanged. Your network must already allow Beamer."
+msgstr "La modalità portatile non modifica Windows Firewall. La rete deve già consentire Beamer."
+
+#: win_app/kvm_bridge_win.py
+msgid "Portable — settings and pairing keys stay in this folder, protected by your passphrase. Administrator apps cannot be controlled."
+msgstr "Portatile: impostazioni e chiavi di abbinamento restano in questa cartella, protette dalla frase segreta. Non è possibile controllare le app eseguite come amministratore."
+
+#: win_app/kvm_bridge_win.py
+msgid "Enter the passphrase again."
+msgstr "Inserisci di nuovo la frase segreta."
+
+#: win_app/kvm_bridge_win.py
 msgid "With it off, closing the window quits Beamer. Open Beamer again to bring the window back."
 msgstr "Se disattivato, chiudere la finestra chiude Beamer. Apri di nuovo Beamer per riavere la finestra."
 
@@ -4702,9 +4733,25 @@ msgid "Save failed"
 msgstr "Salvataggio non riuscito"
 
 #: win_app/kvm_bridge_win.py
+msgid "Another Beamer copy controls input on this PC. Quit it to use input in this copy."
+msgstr "Un'altra copia di Beamer controlla l'input su questo PC. Chiudila per usare l'input in questa copia."
+
+#: win_app/kvm_bridge_win.py
 #, python-brace-format
 msgid "<b>Beamer {version}</b><br>One keyboard and mouse for all your Macs and PCs.<br><br><a href=\"{url}\" style=\"color: {colour};\">{link}</a>"
 msgstr "<b>Beamer {version}</b><br>Una sola tastiera e un solo mouse per tutti i tuoi Mac e PC.<br><br><a href=\"{url}\" style=\"color: {colour};\">{link}</a>"
+
+#: win_app/kvm_bridge_win.py
+msgid "Use at least 12 characters for the passphrase."
+msgstr "Usa almeno 12 caratteri per la frase segreta."
+
+#: win_app/kvm_bridge_win.py
+msgid "The passphrases do not match. Try again."
+msgstr "Le frasi segrete non coincidono. Riprova."
+
+#: win_app/kvm_bridge_win.py
+msgid "The portable settings could not be unlocked or saved. Check the passphrase and that the folder is writable. Existing pairing keys have been kept."
+msgstr "Impossibile sbloccare o salvare le impostazioni portatili. Controlla la frase segreta e che la cartella sia scrivibile. Le chiavi di abbinamento esistenti sono state conservate."
 
 #: win_app/kvm_bridge_win.py
 #, python-brace-format
@@ -5219,6 +5266,14 @@ msgstr "La tastiera e il puntatore di {name} sono su questo PC. Riporta il punta
 #, python-brace-format
 msgid "This PC's keyboard and pointer are on {name}. Do the same again to bring them home."
 msgstr "La tastiera e il puntatore di questo PC sono su {name}. Ripeti la stessa azione per riportarli a casa."
+
+#: win_app/portable_entry.py
+msgid "Beamer Portable needs its Beamer.portable marker and a writable folder beside the app. Move the whole folder to writable storage and try again."
+msgstr "Beamer Portable richiede il marcatore Beamer.portable e una cartella scrivibile accanto all'app. Sposta l'intera cartella in un percorso scrivibile e riprova."
+
+#: win_app/portable_entry.py
+msgid "Beamer Portable"
+msgstr "Beamer Portable"
 
 #: win_app/sender.py
 msgid "Not connected"

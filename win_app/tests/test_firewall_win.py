@@ -53,6 +53,65 @@ def payload(rules=(), networks=(network(),)):
 
 
 class InterpretTests(unittest.TestCase):
+    def test_existing_rules_on_another_profile_do_not_trigger_automatic_repair(self):
+        rules = [rule(), pairing_rule(), pairing_tcp_rule(), pairing_tcp_rule(action="Block", profile="Domain")]
+        status = interpret(payload(rules, [network("Public")]), EXE, PORT)
+        self.assertFalse(firewall_win.missing_rule(status))
+        self.assertFalse(status.blocked)
+        self.assertEqual(advise(status).action, "trust")
+
+    def test_existing_misprofiled_pairing_rules_require_a_manual_repair(self):
+        rules = [rule(), pairing_rule(profile="Public"), pairing_tcp_rule(profile="Public")]
+        status = interpret(payload(rules), EXE, PORT)
+        self.assertFalse(firewall_win.missing_rule(status))
+        self.assertEqual(advise(status).action, "repair")
+
+    def test_pairing_only_blocks_are_reported_and_never_auto_repaired(self):
+        for transport in ("TCP", "UDP"):
+            with self.subTest(transport=transport):
+                rules = [rule(), pairing_rule(), pairing_tcp_rule(),
+                         rule(action="Block", port=str(firewall_win.PAIRING_PORT), protocol=transport)]
+                status = interpret(payload(rules), EXE, PORT)
+                self.assertTrue(status.blocked)
+                self.assertEqual(advise(status).action, "repair")
+                self.assertIn("pairing", advise(status).sentence)
+                self.assertFalse(firewall_win.missing_rule(status))
+
+    def test_pairing_rules_must_cover_every_lan_profile(self):
+        for transport in ("TCP", "UDP"):
+            with self.subTest(transport=transport):
+                rules = [rule(), pairing_rule(profile="Public" if transport == "UDP" else "Private"),
+                         pairing_tcp_rule(profile="Public" if transport == "TCP" else "Private")]
+                status = interpret(payload(rules), EXE, PORT)
+                self.assertFalse(status.pairing_tcp_covered if transport == "TCP" else status.pairing_covered)
+                self.assertEqual(advise(status).action, "repair")
+                self.assertFalse(firewall_win.missing_rule(status))
+
+    def test_public_lan_with_private_pairing_rules_offers_trust(self):
+        rules = [rule(profile="Any"), pairing_rule(), pairing_tcp_rule()]
+        status = interpret(payload(rules, [network("Public")]), EXE, PORT)
+        self.assertFalse(status.pairing_covered)
+        self.assertFalse(status.pairing_tcp_covered)
+        self.assertEqual(advise(status).action, "trust")
+
+    def test_pairing_block_on_an_inactive_profile_does_not_hide_healthy_rules(self):
+        rules = [rule(), pairing_rule(), pairing_tcp_rule(),
+                 pairing_rule(action="Block", profile="Public"),
+                 pairing_tcp_rule(action="Block", profile="Public")]
+        status = interpret(payload(rules), EXE, PORT)
+        self.assertFalse(status.blocked)
+        self.assertTrue(status.pairing_allowed)
+        self.assertTrue(status.pairing_tcp_allowed)
+        self.assertEqual(advise(status).action, "check")
+
+    def test_domain_authenticated_network_matches_domain_pairing_rules(self):
+        rules = [rule(profile="Domain"), pairing_rule(profile="Domain"), pairing_tcp_rule(profile="Domain")]
+        status = interpret(payload(rules, [network("DomainAuthenticated")]), EXE, PORT)
+        self.assertTrue(status.covered)
+        self.assertTrue(status.pairing_allowed)
+        self.assertTrue(status.pairing_tcp_allowed)
+        self.assertEqual(advise(status).action, "check")
+
     def test_no_rule_at_all(self):
         status = interpret(payload(), EXE, PORT)
         self.assertFalse(status.allowed)

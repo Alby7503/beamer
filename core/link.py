@@ -43,6 +43,7 @@ QUEUE_BYTES = 32 * 1024 * 1024
 STALL_SECONDS = 2.0
 SENT_RECORD_LIMIT = 20000
 ACK_STALL_SECONDS = 1.5
+INPUT_WINDOW = 32
 MEDIA_KEYS = frozenset({"volume_mute", "volume_down", "volume_up", "media_next", "media_prev", "media_stop", "media_play_pause"})
 WINDOW_SECONDS = 30.0
 LOG_SECONDS = 60.0
@@ -133,6 +134,7 @@ class OutboundLink:
         self._period = []
         self._last_ack_seq = -1
         self.last_ack_at = None
+        self._last_ack_progress_at = None
         self._last_rx = 0.0
         self._last_tx = 0.0
         self._logged_at = 0.0
@@ -149,6 +151,7 @@ class OutboundLink:
         self.down_since = clock()
         self._blocked_for = None
         self._try_host = None
+        self._try_port = None
         self._followed_at = None
         self._followed_to = None
         self._answered = False
@@ -277,8 +280,10 @@ class OutboundLink:
                     self._blocked_for = None
                 with self._lock:
                     tried, self._try_host = self._try_host, None
+                    tried_port, self._try_port = self._try_port, None
                 if entry.get("host_pinned") is not False:
                     tried = None
+                    tried_port = None
                 if self._blocked_for is not None:
                     self._wake.wait(0.25)
                     self._wake.clear()
@@ -288,7 +293,7 @@ class OutboundLink:
                     self._wake.wait(0.25)
                     self._wake.clear()
                     continue
-                port = target[1]
+                port = tried_port if tried is not None and tried_port is not None else target[1]
                 host = tried or target[0]
                 wait = self._reconnect
                 try:
@@ -385,7 +390,7 @@ class OutboundLink:
             if self._stop.is_set():
                 raise LinkEnded(tr("This link was stopped"), "off")
             deadline = time.monotonic() + HANDSHAKE_SECONDS
-            fields = self._handshake(_Interruptible(sock, self._stop), entry, host, deadline, direct)
+            fields = self._handshake(_Interruptible(sock, self._stop), entry, host, deadline, direct, port)
             if self._stop.is_set():
                 raise LinkEnded(tr("This link was stopped"), "off")
         except LinkEnded:
@@ -437,7 +442,7 @@ class OutboundLink:
             return tr("Update Beamer on {name} to 1.5.0; if it is up to date, pair the two again").format(name=name)
         return tr("{name} closed the connection: it may have removed this machine, or be too busy to answer").format(name=name)
 
-    def _handshake(self, sock, entry, host, deadline, direct):
+    def _handshake(self, sock, entry, host, deadline, direct, port=None):
         name = self._name(entry)
         identity = self._identity()
         own_id = bytes(identity["id"])
@@ -473,8 +478,9 @@ class OutboundLink:
         changes = {"name": welcome["name"], "platform": welcome["platform"]}
         if welcome["hw"] is not None:
             changes["hw"] = welcome["hw"]
-        if direct and host != entry.get("host"):
+        if direct:
             changes["host"] = host
+            changes["port"] = port if port is not None else entry.get("port")
         try:
             outcome, _ = self._book.admit(self.key_id, own_id, welcome["id"], changes)
         except Exception:
@@ -553,6 +559,7 @@ class OutboundLink:
         self._period = []
         self._last_ack_seq = -1
         self.last_ack_at = None
+        self._last_ack_progress_at = None
         self._locked = False
         self._drop_reason = None
         self._response_time.reset()
@@ -671,6 +678,8 @@ class OutboundLink:
             pending = len(self._sent_at)
             ack_paused = self._ack_pause_since is not None
             oldest_age = now - oldest[1] - self._ack_stall_credit.get(oldest[0], 0.0) if oldest else 0.0
+            if self._last_ack_progress_at is not None:
+                oldest_age = min(oldest_age, now - self._last_ack_progress_at)
         if oldest is not None and not ack_paused and oldest_age > ACK_STALL_SECONDS:
             LOGGER.warning(
                 "%s stopped acknowledging input: oldest seq %d, last acked seq %d, %d unacknowledged",
@@ -786,19 +795,32 @@ class OutboundLink:
         return self._enqueue(message, seq=True)
 
     def _enqueue(self, message, seq):
-        size = _weight(message)
         with self._cond:
-            if not self._live or len(self._outbox) >= QUEUE_LIMIT or self._queued_bytes + size > QUEUE_BYTES:
+            if not self._live:
                 return False
-            self._queued_bytes += size
+            if seq:
+                data = dict(message.get("data") or {})
+                data["seq"] = self._seq + 1
+                message = {"type": message["type"], "data": data}
+            merged = None
+            if seq and self._outbox:
+                merged = protocol.coalesce_mousemove(self._outbox[-1], message, preserve_path="motion_path" in self._caps)
+            previous_size = _weight(self._outbox[-1]) if merged is not None else 0
+            added_size = _weight(merged) - previous_size if merged is not None else _weight(message)
+            if ((merged is None and len(self._outbox) >= QUEUE_LIMIT)
+                    or self._queued_bytes + added_size > QUEUE_BYTES):
+                return False
+            self._queued_bytes += added_size
             if seq:
                 self._seq += 1
-                data = dict(message.get("data") or {})
-                data["seq"] = self._seq
-                message = {"type": message["type"], "data": data}
                 self.last_sent_seq = self._seq
                 self._queued_at[self._seq] = time.monotonic()
-            self._outbox.append(message)
+            if merged is not None:
+                old_seq = self._outbox[-1]["data"]["seq"]
+                self._queued_at[self._seq] = self._queued_at.pop(old_seq)
+                self._outbox[-1] = merged
+            else:
+                self._outbox.append(message)
             self._cond.notify()
             return True
 
@@ -806,7 +828,9 @@ class OutboundLink:
         try:
             while True:
                 with self._cond:
-                    while not self._outbox or self._stall.is_set():
+                    while (not self._outbox or self._stall.is_set()
+                           or (len(self._sent_at) >= INPUT_WINDOW
+                               and self._outbox[0].get("type") in protocol.INPUT_TYPES)):
                         if self._sock is not sock:
                             return
                         waited_at = time.monotonic()
@@ -869,6 +893,8 @@ class OutboundLink:
             if seq > self._written_seq:
                 raise protocol.ProtocolError("ack is ahead of anything sent")
             advanced = seq > self._last_ack_seq
+            if advanced and seq > 0:
+                self._last_ack_progress_at = now
             self._last_ack_seq = seq
             self.last_ack_at = now
             sent = None
@@ -883,6 +909,7 @@ class OutboundLink:
                 self._period.append((sample, held))
             while self._samples and now - self._samples[0][0] > WINDOW_SECONDS:
                 self._samples.popleft()
+            self._cond.notify_all()
         self._locked = ack["locked"]
 
     @property
@@ -895,17 +922,17 @@ class OutboundLink:
         with self._lock:
             return [sample for at, sample in self._samples if now - at <= min(max_age, WINDOW_SECONDS)]
 
-    # Following a peer to a new address (section 6)
+    # Following a peer to a new endpoint (section 6)
 
     def follow(self, machines):
         """`machines`: what discovery hears, dicts with `name`, `address` and, while that machine shows
-        a code, `id`. Only an address learnt into an empty entry may follow discovery; saved choices,
+        a code, `id`. Only an endpoint learnt into an empty entry may follow discovery; saved choices,
         including older entries without provenance, stay put. A link down for ten seconds is
-        tried once at the address of a beacon with this
-        entry's exact name, at its saved port, at most every thirty seconds. The address is saved only
-        once the link authenticates. Two machines may share a name, so a beacon whose `id` is another
-        machine's is passed over, one at another paired machine's saved address is tried after the
-        rest (the two may have swapped addresses), and several are tried in turn rather than the
+        tried once at a beacon endpoint with this entry's exact name, at most every thirty seconds.
+        A beacon without a port uses the saved port. The endpoint is saved only once the link
+        authenticates. Two machines may share a name, so a beacon whose `id` is another machine's
+        is passed over, one at another paired machine's saved endpoint is tried after the
+        rest (the two may have swapped endpoints), and several are tried in turn rather than the
         first for ever."""
         if self._live or self.key_id is None:
             return
@@ -919,19 +946,30 @@ class OutboundLink:
             return
         if entry.get("host_pinned") is not False:
             return
-        others = {peer.get("host") for peer in self._book.peers() if peer.get("token") != self.token}
+        others = {(peer.get("host"), peer.get("port")) for peer in self._book.peers()
+                  if peer.get("token") != self.token}
         own_id = entry.get("id")
-        found = [m["address"] for m in machines
-                 if m.get("name") == entry["name"] and m.get("address") and m["address"] != entry.get("host")
-                 and not (own_id and m.get("id") and m["id"] != own_id)]
-        found = [address for address in found if address not in others] + [address for address in found if address in others]
+        found = []
+        for machine in machines:
+            if not isinstance(machine, dict) or machine.get("name") != entry["name"]:
+                continue
+            address = machine.get("address")
+            port = machine.get("port", entry.get("port"))
+            if (not isinstance(address, str) or not address or isinstance(port, bool)
+                    or not isinstance(port, int) or not 1 <= port <= 65535
+                    or (address, port) == (entry.get("host"), entry.get("port"))
+                    or (own_id and machine.get("id") and machine["id"] != own_id)):
+                continue
+            if (address, port) not in found:
+                found.append((address, port))
+        found = [endpoint for endpoint in found if endpoint not in others] + [endpoint for endpoint in found if endpoint in others]
         if not found:
             return
-        address = found[(found.index(self._followed_to) + 1) % len(found)] if self._followed_to in found else found[0]
+        endpoint = found[(found.index(self._followed_to) + 1) % len(found)] if self._followed_to in found else found[0]
         self._followed_at = now
-        self._followed_to = address
+        self._followed_to = endpoint
         with self._lock:
-            self._try_host = address
+            self._try_host, self._try_port = endpoint
         self._wake.set()
 
 
@@ -968,6 +1006,8 @@ class _Interruptible:
 
 def _weight(message):
     """About how many bytes a queued message holds: a clipboard's text and image, else nothing."""
+    if message.get("type") == protocol.MSG_MOUSEMOVE:
+        return len((message.get("data") or {}).get("samples", ())) * 32
     if message.get("type") != protocol.MSG_CLIPBOARD:
         return 0
     data = message.get("data") or {}

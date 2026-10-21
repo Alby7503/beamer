@@ -811,8 +811,7 @@ class ReviewTests(unittest.TestCase):
         self.assertTrue(self.wait(lambda: [m for t, m in rig.links.sent if t == B and m["type"] == "keydown"]))
         self.assertEqual([m["type"] for t, m in rig.links.sent if t == B], ["focus", "clipboard", "keydown"])
 
-    def test_pointer_moves_made_during_a_clipboard_read_go_one_by_one_as_made(self):
-        # Never summed: the far machine's edge feels each move where its pointer is (return_edge).
+    def test_pointer_moves_during_a_clipboard_read_keep_their_relative_travel(self):
         rig = self.two()
         rig.clipboard.slow_get = 0.3
         self.start_worker(rig)
@@ -822,7 +821,7 @@ class ReviewTests(unittest.TestCase):
         self.assertTrue(self.wait(lambda: [m for t, m in rig.links.sent if t == B and m["type"] == "mousemove"]))
         self.assertTrue(self.wait(lambda: not rig.sender._clip_wait))
         moves = [m["data"] for t, m in rig.links.sent if t == B and m["type"] == "mousemove"]
-        self.assertEqual([(m["dx"], m["dy"]) for m in moves], [(3, 1), (4, -2), (5, 0)])
+        self.assertEqual((sum(m["dx"] for m in moves), sum(m["dy"] for m in moves)), (12, -1))
 
     def test_a_link_lost_during_a_clipboard_read_drops_what_waited_and_a_retake_sends_the_clipboard_after_its_focus(self):
         rig = self.two()
@@ -952,6 +951,32 @@ class MouseTests(unittest.TestCase):
 
 
 class ClipboardReliabilityTests(unittest.TestCase):
+    def test_unsendable_clipboards_are_read_once_until_the_next_local_copy(self):
+        for text, image, caps in ((None, None, CAPS), ("", None, CAPS),
+                                  ("x" * (protocol.CLIPBOARD_MAX_BYTES + 1), None, CAPS),
+                                  (None, b"not a PNG", CAPS), ("unsupported", None, ())):
+            with self.subTest(text_length=len(text or ""), image=image, caps=caps):
+                rig = Rig()
+                rig.links.caps_of[B] = frozenset(caps)
+                rig.clipboard.copy(text)
+                rig.clipboard.image = image
+                with mock.patch.object(rig.clipboard, "get_contents", wraps=rig.clipboard.get_contents) as read:
+                    rig.sender.set_redirecting(True)
+                    rig.accept_take()
+                    rig.sender.set_redirecting(False)
+                    rig.flush()
+                    rig.sender.set_redirecting(True)
+                    rig.flush()
+                    rig.accept_take()
+                    self.assertEqual(read.call_count, 1)
+                    self.assertEqual(rig.sent(B, "clipboard"), [])
+                    rig.clipboard.copy("new copy")
+                    rig.sender.tick()
+                    rig.flush()
+                    self.assertEqual(read.call_count, 2)
+                if "clipboard" in caps:
+                    self.assertEqual(rig.sent(B, "clipboard"), [protocol.clipboard_msg("new copy")])
+
     def test_a_read_finishing_after_home_never_posts_private_local_text(self):
         rig = Rig()
         rig.sender.set_redirecting(True)
@@ -998,7 +1023,7 @@ class ClipboardReliabilityTests(unittest.TestCase):
         rig = Rig()
         rig.sender.set_redirecting(True)
         rig.accept_take()
-        for failure in ("read", "read_exception", "post", "post_exception"):
+        for failure in ("read_exception", "post", "post_exception"):
             with self.subTest(failure=failure):
                 text = "new local copy: " + failure
                 rig.clipboard.copy(text)
@@ -1009,7 +1034,7 @@ class ClipboardReliabilityTests(unittest.TestCase):
                     if len(calls) == 1:
                         if failure.endswith("exception"):
                             raise OSError("clipboard temporarily busy")
-                        return (None, None) if failure == "read" else False
+                        return False
                     return read() if failure.startswith("read") else post(*args)
                 target, name = (rig.clipboard, "get_contents") if failure.startswith("read") else (rig.links, "post")
                 with mock.patch.object(target, name, side_effect=attempt):
@@ -1023,7 +1048,7 @@ class ClipboardReliabilityTests(unittest.TestCase):
         rig.sender.set_redirecting(True)
         rig.accept_take()
         rig.clipboard.copy("temporarily unreadable")
-        with mock.patch.object(rig.clipboard, "get_contents", return_value=(None, None)) as read:
+        with mock.patch.object(rig.clipboard, "get_contents", side_effect=OSError("clipboard busy")) as read:
             rig.sender.tick()
             rig.sender.on_key("a", True, 0x41, "a")
             rig.flush()
@@ -1073,7 +1098,7 @@ class ClipboardReliabilityTests(unittest.TestCase):
                 rig = Rig()
                 read, post = rig.clipboard.get_contents, rig.links.post
                 if failure == "read":
-                    rig.clipboard.get_contents = lambda: (None, None)
+                    rig.clipboard.get_contents = mock.Mock(side_effect=OSError("clipboard busy"))
                 else:
                     rig.links.post = lambda peer, message: False if message["type"] == protocol.MSG_CLIPBOARD else post(peer, message)
                 rig.sender.set_redirecting(True)

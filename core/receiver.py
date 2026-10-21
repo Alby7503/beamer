@@ -347,6 +347,7 @@ class PeerBook:
             if "host" in changes:
                 if entry.get("host") and entry.get("host_pinned") is not False:
                     changes.pop("host")
+                    changes.pop("port", None)
                 elif changes["host"] and not entry.get("host"):
                     changes["host_pinned"] = False
             entry.update(changes)
@@ -430,20 +431,14 @@ class _Link:
                 if isinstance(message, dict) and message.get("type") == protocol.MSG_MOUSEMOVE else None)
         with self.cond:
             while not self.closed.is_set():
-                if move is not None and not (move["dx"] and move["dy"]) and self.inbox:
-                    previous = protocol.read_input(self.inbox[-1][0])
-                    if (previous is not None and previous["type"] == protocol.MSG_MOUSEMOVE
-                            and move["seq"] > previous["seq"]
-                            and (previous["dx"] > 0) == (move["dx"] > 0)
-                            and (previous["dx"] < 0) == (move["dx"] < 0)
-                            and (previous["dy"] > 0) == (move["dy"] > 0)
-                            and (previous["dy"] < 0) == (move["dy"] < 0)):
-                        dx, dy = previous["dx"] + move["dx"], previous["dy"] + move["dy"]
-                        if abs(dx) <= protocol.MOVE_MAX and abs(dy) <= protocol.MOVE_MAX:
-                            # Wire motion is relative: keeping just the last delta loses travel.
-                            # Diagonal samples must retain their tangent positions and individual
-                            # corner pressure. Reversals and axis changes stay separate too.
-                            self.inbox[-1][0] = protocol.mousemove_msg(dx, dy, move["seq"])
+                if move is not None and self.inbox:
+                    merged = protocol.coalesce_mousemove(self.inbox[-1][0], message)
+                    if merged is not None:
+                        added_size = len(protocol.dumps_message(merged)) - len(protocol.dumps_message(self.inbox[-1][0]))
+                        if self.inbox_bytes + added_size <= INBOX_BYTES:
+                            self.inbox[-1][0] = merged
+                            self.inbox[-1][1] += added_size
+                            self.inbox_bytes += added_size
                             return True
                 if len(self.inbox) < INBOX_LIMIT and self.inbox_bytes + size <= INBOX_BYTES:
                     break
@@ -545,6 +540,7 @@ class LinkResponder:
         paired_callback=None,
         link_callback=None,
         announce=None,
+        listener=None,
     ) -> None:
         self._book = book
         self._identity = identity
@@ -564,6 +560,7 @@ class LinkResponder:
             "link": link_callback,
         }
         self._announce = announce or (lambda peer: [])
+        self._prebound_listener = listener
         # This machine's speed for a peer's pointer and scroll, and whether
         # its edges are held (Pause crossing, a full-screen app), which keeps the zones from firing.
         self.input_scale: Optional[InputScale] = None
@@ -735,6 +732,9 @@ class LinkResponder:
             _close_socket(listener)
 
     def _bind(self, port: int, stop_event: threading.Event):
+        if self._prebound_listener is not None:
+            listener, self._prebound_listener = self._prebound_listener, None
+            return listener
         reported = False
         while not stop_event.is_set():
             listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -1103,11 +1103,11 @@ class LinkResponder:
                     if self._releases_held(link, read):
                         self._inject_timed_locked(link, read)
                 else:
-                    zones_at = time.monotonic()
-                    consumed = read["type"] == protocol.MSG_MOUSEMOVE and self._zones_locked(link, read, after)
-                    link.timing.add("zones", time.monotonic() - zones_at)
-                    if not consumed:
-                        self._inject_timed_locked(link, read)
+                    samples = read.get("samples")
+                    if samples:
+                        self._apply_motion_path_locked(link, read, after)
+                    else:
+                        self._apply_input_locked(link, read, after)
         except Exception:
             LOGGER.exception("Input from %s could not be injected", link.name)
             self._input_error_status(link)
@@ -1116,6 +1116,71 @@ class LinkResponder:
         callbacks_at = time.monotonic()
         self._run(after)
         link.timing.add("input_callbacks", time.monotonic() - callbacks_at)
+
+    def _apply_motion_path_locked(self, link, read, after):
+        desktop = self._desktop_module()
+        pointer, monitors = desktop.cursor_position(), desktop.monitors()
+        display_map = getattr(desktop, "display_map", lambda: {})()
+        geometry = (monitors, pointer, display_map)
+        scale = max(1.0, self.input_scale.pointer if self.input_scale is not None else 1.0)
+        radius_x = sum(abs(dx) for dx, _dy in read["samples"]) * scale
+        radius_y = sum(abs(dy) for _dx, dy in read["samples"]) * scale
+        # Fractional scaling can contribute another pixel; display edges accept a 1.5 px
+        # approach. A stationary axis needs neither margin and can stay against an unused wall.
+        if radius_x:
+            radius_x += 2.5
+        if radius_y:
+            radius_y += 2.5
+
+        def inside(screen):
+            x, y = pointer
+            return ((screen.x + radius_x < x < screen.right - radius_x if radius_x else screen.x <= x <= screen.right)
+                    and (screen.y + radius_y < y < screen.bottom - radius_y if radius_y else screen.y <= y <= screen.bottom))
+
+        safe = any(inside(screen) for screen in monitors)
+        if any(kind == "button" for kind, _name in link.held):
+            # A straight axis-aligned drag retains the old fast path; bends and reversals
+            # must reach the application as individual movements, even away from walls.
+            safe = safe and (
+                all(dy == 0 and (dx == 0 or dx * read["dx"] > 0) for dx, dy in read["samples"])
+                or all(dx == 0 and (dy == 0 or dy * read["dy"] > 0) for dx, dy in read["samples"]))
+        for _peer, model in self._armed:
+            if model.display:
+                screen = display_map.get(model.display) if isinstance(display_map, dict) else None
+                safe = safe and isinstance(screen, crossing.Rect) and inside(screen)
+            if safe and model._at_edge(monitors, pointer, display_map):
+                safe = False
+        # Every sample still feeds pressure and decay. Native movement is combined only when
+        # no moving axis can reach a wall and no drag needs the intermediate path.
+        # A stationary axis may already be against an unused wall.
+        scaled_dx = scaled_dy = 0
+        for dx, dy in read["samples"]:
+            if self._owner is not link:
+                return
+            segment = dict(read, dx=dx, dy=dy)
+            was_live = self._zones_live
+            if safe:
+                self._zones_locked(link, segment, after, geometry=geometry)
+                if self.input_scale is not None:
+                    part_dx, part_dy = self.input_scale.move(dx, dy)
+                    scaled_dx += part_dx
+                    scaled_dy += part_dy
+            else:
+                self._apply_input_locked(link, segment, after)
+            if was_live and not self._zones_live:
+                return
+        if safe:
+            if self.input_scale is not None:
+                self._inject_timed_locked(link, dict(read, dx=scaled_dx, dy=scaled_dy), scaled=True)
+            else:
+                self._inject_timed_locked(link, read)
+
+    def _apply_input_locked(self, link, read, after):
+        zones_at = time.monotonic()
+        consumed = read["type"] == protocol.MSG_MOUSEMOVE and self._zones_locked(link, read, after)
+        link.timing.add("zones", time.monotonic() - zones_at)
+        if not consumed:
+            self._inject_timed_locked(link, read)
 
     def _record_incoming_move(self, link: _Link, read: dict) -> None:
         now = time.monotonic()
@@ -1146,10 +1211,10 @@ class LinkResponder:
         who = peerlist.label_for(self._settings_now()[0], peer_id=protocol.id_text(link.peer_id)) or link.name
         self._set_status(ServerState.CONNECTED, tr("Input error from {name}; see log").format(name=who))
 
-    def _inject_timed_locked(self, link: _Link, read: dict) -> None:
+    def _inject_timed_locked(self, link: _Link, read: dict, *, scaled=False) -> None:
         began = time.monotonic()
         try:
-            self._inject_locked(link, read)
+            self._inject_locked(link, read, scaled=scaled)
         finally:
             elapsed = time.monotonic() - began
             link.timing.add("inject", elapsed)
@@ -1188,7 +1253,7 @@ class LinkResponder:
             return "gestures" in link.own_caps
         return True
 
-    def _inject_locked(self, link: _Link, read: dict) -> None:
+    def _inject_locked(self, link: _Link, read: dict, *, scaled=False) -> None:
         injector = self._injector_module()
         kind = read["type"]
         if kind in (protocol.MSG_KEYDOWN, protocol.MSG_KEYUP):
@@ -1200,7 +1265,9 @@ class LinkResponder:
             injector.inject_key(read["key"], down=down, us=read["us"])
         elif kind == protocol.MSG_MOUSEMOVE:
             dx, dy = read["dx"], read["dy"]
-            if self.input_scale is not None and (dx or dy):
+            if scaled and not (dx or dy):
+                return
+            if not scaled and self.input_scale is not None and (dx or dy):
                 dx, dy = self.input_scale.move(dx, dy)
                 if not (dx or dy):
                     return
@@ -1335,14 +1402,17 @@ class LinkResponder:
     def _disarm_locked(self) -> None:
         self._armed, self._zones_live = [], False
 
-    def _zones_locked(self, link: _Link, read: dict, after: list) -> bool:
+    def _zones_locked(self, link: _Link, read: dict, after: list, geometry=None) -> bool:
         """Feeds one mouse move to the armed zones, first that holds the pointer winning. True when
         the move was used at an edge (held there, or crossed and the owner sent a `switch`)."""
         if not self._armed or self.edges_held():
             return False
         desktop = self._desktop_module()
-        display_map = getattr(desktop, "display_map", lambda: {})()
-        monitors, pointer = desktop.monitors(), desktop.cursor_position()
+        if geometry is None:
+            display_map = getattr(desktop, "display_map", lambda: {})()
+            monitors, pointer = desktop.monitors(), desktop.cursor_position()
+        else:
+            monitors, pointer, display_map = geometry
         for peer, model in self._armed:
             outcome = model.feed(monitors, pointer, float(read["dx"]), float(read["dy"]), display_map=display_map)
             if outcome.action == crossing.PASS:
@@ -1734,12 +1804,12 @@ class LinkResponder:
             if self._clipboard_stamp() != stamp:
                 return
             try:
-                text, image = self._clipboard_module().get_contents()
+                clipboard = self._clipboard_module()
+                text, image = getattr(clipboard, "read_contents", clipboard.get_contents)()
             except Exception:
-                text, image = None, None
                 if attempt == CLIPBOARD_RETRY_ATTEMPTS - 1:
                     LOGGER.exception("Could not read the clipboard for %s", link.name)
-            if text is not None or image is not None:
+            else:
                 break
             if attempt < CLIPBOARD_RETRY_ATTEMPTS - 1:
                 time.sleep(CLIPBOARD_RETRY_SECONDS)

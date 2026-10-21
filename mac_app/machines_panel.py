@@ -855,17 +855,18 @@ class MachinesPanel:
     def _refresh_heard(self):
         service = self.service
         heard = service.machines() if service is not None else []
-        chosen = self.chosen["address"] if self.chosen is not None else None
+        chosen = pairing.discovery_endpoint(self.chosen) if self.chosen is not None else None
         hide = self.controller.cfg.hide_addresses
         key = (chosen, hide, tuple(tuple(sorted((k, str(v)) for k, v in item.items())) for item in heard))
         if key == self._heard_key:
             return
         self._heard_key = key
         self._heard = heard
-        current = next((item for item in heard if item["address"] == chosen), None)
+        current = pairing.refreshed_discovery(self.chosen, heard)
         if current is not None and current != self.chosen:
             showed = self.chosen["pair_id"]
             self.chosen = current
+            chosen = pairing.discovery_endpoint(current)
             fault = self._pair_ink == "fault"
             if current["pair_id"] != showed and not self.pairing and (current["pair_id"] or not fault):
                 self._say_choice()
@@ -873,7 +874,7 @@ class MachinesPanel:
             self.heard_list.removeArrangedSubview_(view)
             view.removeFromSuperview()
         for index, (item, shared) in enumerate(zip(heard, peerlist.sharing_a_name(heard))):
-            self._heard_row(index, item, item["address"] == chosen, shared)
+            self._heard_row(index, item, pairing.discovery_endpoint(item) == chosen, shared)
         if service is not None and service.error:
             self.heard_empty.set(tr("Beamer cannot look for machines: {reason}").format(reason=service.error), ink="fault")
         else:
@@ -881,7 +882,7 @@ class MachinesPanel:
                 tr("Looking for machines running Beamer. Open it on the other machine and it appears here; across a VPN or on guest Wi-Fi it may not, so type its address below."), ink="ink_2")
         self.heard_frame.setHidden_(not heard)
         self.heard_empty.view.setHidden_(bool(heard))
-        if chosen is not None and chosen not in {item["address"] for item in heard}:
+        if chosen is not None and chosen not in {pairing.discovery_endpoint(item) for item in heard}:
             self.chosen = None
             self._heard_key = None
 
@@ -952,7 +953,7 @@ class MachinesPanel:
         self._cancel_nearby()
         if kind == "machine":
             # The list may have refreshed since the row was chosen; pair with the latest beacon.
-            target = next((item for item in self._heard if item["address"] == target["address"]), target)
+            target = pairing.refreshed_discovery(target, self._heard) or target
             name = target["name"]
             if target.get("pairing") != pairing.PAIRING_V3:
                 self.chosen = target

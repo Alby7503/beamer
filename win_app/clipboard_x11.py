@@ -188,6 +188,14 @@ def get_contents() -> Tuple[Optional[str], Optional[bytes]]:
     return _on_gui(_read, default=(None, None))
 
 
+def read_contents() -> Tuple[Optional[str], Optional[bytes]]:
+    """Like get_contents, but raise OSError if the GUI read failed or timed out."""
+    result = _on_gui(_read, default=None)
+    if result is None:
+        raise OSError("the X11 clipboard could not be read")
+    return result
+
+
 def changed_contents() -> Tuple[Optional[str], Optional[bytes]]:
     """get_contents(), or (None, None) when the clipboard has not changed since it was last sent
     to or written from the other machine. Either way the current contents count as sent from here

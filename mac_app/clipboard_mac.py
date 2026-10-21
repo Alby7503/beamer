@@ -34,12 +34,16 @@ _written_count = None
 _LOCK = threading.Lock()
 
 
-def _text_from_pasteboard(pasteboard):
+def _text_from_pasteboard(pasteboard, *, strict=False):
     text = pasteboard.stringForType_(AppKit.NSPasteboardTypeString)
+    # NSPasteboard also reports provider timeouts as nil while the advertised type remains.
+    if (strict and text is None and
+            AppKit.NSPasteboardTypeString in (getattr(pasteboard, "types", lambda: ())() or ())):
+        raise OSError("the advertised pasteboard text could not be read")
     return text if isinstance(text, str) and text else None
 
 
-def _png_from_pasteboard(pasteboard):
+def _png_from_pasteboard(pasteboard, *, strict=False):
     """PNG bytes for the image on the pasteboard, or None. PNG is taken as
     is; TIFF (what most apps put up, and what a Retina grab carries
     uncompressed at 25MB+) is re-encoded through NSBitmapImageRep, which
@@ -47,23 +51,31 @@ def _png_from_pasteboard(pasteboard):
     png = pasteboard.dataForType_(AppKit.NSPasteboardTypePNG)
     if png is not None and len(png):
         return bytes(png)
+    missing_png = (strict and png is None and
+                   AppKit.NSPasteboardTypePNG in (getattr(pasteboard, "types", lambda: ())() or ()))
     tiff = pasteboard.dataForType_(AppKit.NSPasteboardTypeTIFF)
-    if tiff is None or not len(tiff):
-        return None
-    rep = AppKit.NSBitmapImageRep.imageRepWithData_(tiff)
-    if rep is None:
-        return None
-    png = rep.representationUsingType_properties_(AppKit.NSBitmapImageFileTypePNG, None)
-    return bytes(png) if png is not None and len(png) else None
+    missing_tiff = (strict and tiff is None and
+                    AppKit.NSPasteboardTypeTIFF in (getattr(pasteboard, "types", lambda: ())() or ()))
+    if tiff is not None and len(tiff):
+        rep = AppKit.NSBitmapImageRep.imageRepWithData_(tiff)
+        if rep is not None:
+            png = rep.representationUsingType_properties_(AppKit.NSBitmapImageFileTypePNG, None)
+            if png is not None and len(png):
+                return bytes(png)
+    if missing_png or missing_tiff:
+        raise OSError("the advertised pasteboard image could not be read")
+    return None
 
 
-def get_contents():
+def get_contents(*, strict=False):
     """(text, png) from the general pasteboard, either None when absent.
     Both are read independently and both are sent: an image copied from
     Finder or a browser usually carries a filename or URL as its text, and
     the pasting app on the other side picks the representation it wants,
     exactly as it would from the source clipboard. Never raises."""
     if AppKit is None:
+        if strict:
+            raise OSError("the macOS clipboard is unavailable")
         return None, None
     try:
         with _LOCK:
@@ -71,21 +83,35 @@ def get_contents():
             for _ in range(3):
                 count = pasteboard.changeCount()
                 text, png = None, None
+                failed = False
                 try:
-                    text = _text_from_pasteboard(pasteboard)
+                    text = _text_from_pasteboard(pasteboard, strict=strict)
                 except Exception:
+                    failed = True
                     LOGGER.exception("failed to read pasteboard text")
                 try:
-                    png = _png_from_pasteboard(pasteboard)
+                    png = _png_from_pasteboard(pasteboard, strict=strict)
                 except Exception:
+                    failed = True
                     LOGGER.exception("failed to read the pasteboard image")
                 if count == pasteboard.changeCount():
+                    if strict and failed and text is None and png is None:
+                        raise OSError("the pasteboard provider could not be read")
                     return text, png
             LOGGER.warning("the pasteboard kept changing during a read")
+            if strict:
+                raise OSError("the pasteboard kept changing during a read")
             return None, None
-    except Exception:
+    except Exception as exc:
         LOGGER.exception("failed to read the macOS clipboard")
+        if strict:
+            raise OSError("failed to read the macOS clipboard") from exc
         return None, None
+
+
+def read_contents():
+    """Like get_contents, but raise OSError on failure so a caller can retry an unchanged copy."""
+    return get_contents(strict=True)
 
 
 def _change_count():

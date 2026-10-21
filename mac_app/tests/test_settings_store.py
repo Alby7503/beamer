@@ -15,6 +15,20 @@ from settings_store import SettingsError, SettingsStore, config_to_raw
 
 
 class SettingsStoreTests(unittest.TestCase):
+    def test_explicitly_saving_the_same_learnt_host_pins_it(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "settings.json"
+            store = SettingsStore(path)
+            store.save(self.valid_raw())
+            settings = store.current()
+            settings["peers"][0]["host_pinned"] = False
+            store.save_settings(settings)
+            raw = config_to_raw(store.load())
+            store.save(raw)
+            self.assertIs(store.current()["peers"][0]["host_pinned"], False)
+            store.save(raw, pin_address=True)
+            self.assertIs(SettingsStore(path).current()["peers"][0]["host_pinned"], True)
+
     def test_editing_a_learnt_host_pins_it_and_survives_reload(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "settings.json"

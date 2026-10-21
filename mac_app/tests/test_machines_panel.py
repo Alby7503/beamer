@@ -794,6 +794,19 @@ class EnteringACodeTests(Base):
         self.assertIsNone(self.panel.chosen["pair_id"])
         self.assertIn("not showing a code yet", self.panel.pair_status.text)
 
+    def test_installed_and_portable_on_one_ip_keep_separate_selection(self):
+        installed = heard(pair_id="installed")
+        portable = dict(installed, name="Laptop (Portable)", port=53000,
+                        reply_port=53001, pair_id="portable")
+        self.service.heard = [installed, portable]
+        self.panel.refresh()
+        self.panel._choose(1)
+        self.assertEqual(self.panel.chosen, portable)
+        refreshed = dict(portable, pair_id="new-portable")
+        self.service.heard = [dict(installed, pair_id="new-installed"), refreshed]
+        self.panel.refresh()
+        self.assertEqual(self.panel.chosen, refreshed)
+
     def test_a_new_code_or_reply_port_replaces_what_pairing_will_use(self):
         self.refresh_heard(heard(pair_id="first"))
         self.panel._choose(0)

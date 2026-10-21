@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (
     QComboBox,
     QFrame,
     QGridLayout,
+    QInputDialog,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -63,6 +64,8 @@ from app_config import (
     save_config,
 )
 from core import crash_log
+from core import portable_runtime
+from core.portable_store import PortableStore, PortableStoreError
 from core.capture_types import DeadKey, TextInput
 from core.i18n import tr
 from core import effects
@@ -202,9 +205,18 @@ firewall_win = platform_parts.firewall
 LOG_PATH: Optional[Path] = None
 
 
+def machine_name(name=""):
+    if name:
+        return name[:protocol.MAX_NAME_CHARS]
+    suffix = " (Portable)" if portable_runtime.enabled() else ""
+    return pairing.machine_name()[:protocol.MAX_NAME_CHARS - len(suffix)] + suffix
+
+
 def configure_logging() -> Optional[Path]:
     global LOG_PATH
-    candidates = [default_config_path().parent, Path(tempfile.gettempdir()) / "Beamer"]
+    candidates = [default_config_path().parent]
+    if not portable_runtime.enabled():
+        candidates.append(Path(tempfile.gettempdir()) / "Beamer")
     for directory in candidates:
         try:
             directory.mkdir(parents=True, exist_ok=True)
@@ -219,6 +231,8 @@ def configure_logging() -> Optional[Path]:
             LOG_PATH = log_path
             return log_path
         except OSError:
+            if portable_runtime.enabled():
+                raise
             continue
     logging.basicConfig(level=logging.INFO)
     return None
@@ -339,7 +353,7 @@ def _instance_server_name() -> str:
         session = ctypes.c_ulong()
         if not kernel32.ProcessIdToSessionId(kernel32.GetCurrentProcessId(), ctypes.byref(session)):
             raise OSError("Beamer could not identify its Windows session")
-        return f"Beamer.Receiver.{session.value}"
+        return f"Beamer.Receiver.{session.value}{portable_runtime.instance_suffix()}"
     suffix = f"Beamer.Receiver.{os.getuid()}"
     if sys.platform.startswith("linux"):
         runtime_location = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.RuntimeLocation)
@@ -522,8 +536,11 @@ class WindowsApplication(QWidget):
         if hasattr(self, "footer_note"):
             self.footer_note.setVisible(self.width() >= 640)
 
-    def __init__(self, config_path: Path, start_after_first_paint: bool = False) -> None:
+    def __init__(self, config_path: Path, start_after_first_paint: bool = False,
+                 input_controller_available: bool = True) -> None:
         super().__init__()
+        self._input_controller_blocked = not input_controller_available
+        self._input_controller_release = None
         self.config_path = config_path
         self._status_lock = threading.RLock()
         self._status = ServerState.STOPPED
@@ -620,14 +637,15 @@ class WindowsApplication(QWidget):
                 protocol.id_text(read["way_back_by"]) if read.get("way_back_by") else None
             ),
             settings_callback=lambda peer, data: self.bridge.settings.emit(protocol.id_text(peer), data),
-            identify_callback=lambda peer, labels: self.bridge.identify.emit(labels),
+            identify_callback=self._receive_identify_screens,
             paired_callback=self._store_paired,
             link_callback=lambda peer, up: self.bridge.peers_changed.emit(),
             announce=self._announce,
             away=lambda: self.sender.owner,
             zones=self._zones,
             clipboard=platform_parts.clipboard,
-            unlock=platform_parts.unlock,
+            unlock=None if portable_runtime.enabled() else platform_parts.unlock,
+            listener=portable_runtime.listener if portable_runtime.enabled() else None,
             hardware=hardware_win.hardware_address_towards,
             desktop=platform_parts.desktop,
             injector=platform_parts.injector,
@@ -663,7 +681,7 @@ class WindowsApplication(QWidget):
         # Same on all machines, over either link: applied on the GUI thread, and announced with
         # this PC's own arrangement the moment a link comes up.
         self.sender.settings_callback = lambda peer, data: self.bridge.settings.emit(protocol.id_text(peer), data)
-        self.sender.identify_callback = lambda peer, labels: self.bridge.identify.emit(labels)
+        self.sender.identify_callback = self._receive_identify_screens
         self.sender.arrangement_callback = lambda peer, read: self.bridge.arrangement.emit(
             protocol.id_text(peer), read["edge"], read["set_at"], protocol.id_text(read["by"]), read.get("way_back"),
             protocol.id_text(read["way_back_by"]) if read.get("way_back_by") else None
@@ -722,7 +740,8 @@ class WindowsApplication(QWidget):
         self._trigger = capture_win.Trigger()
         self._sending_detail = "Not connected"
         self.update_checker = updates.Checker(
-            VERSION, lambda: self._config is None or self._config.check_updates, self.bridge.update.emit, logger=LOGGER
+            VERSION, lambda: self._config is None or self._config.check_updates, self.bridge.update.emit,
+            logger=LOGGER, portable=portable_runtime.enabled(),
         )
         self._paired = False
         try:
@@ -774,6 +793,7 @@ class WindowsApplication(QWidget):
 
         self.refresh_timer = QTimer(self)
         self.refresh_timer.setInterval(250)
+        self.refresh_timer.timeout.connect(self._check_input_controller)
         self.refresh_timer.timeout.connect(lambda: self._refresh_window(skip_hidden=True))
         self.refresh_timer.start()
         self.full_screen_timer = QTimer(self)
@@ -1114,7 +1134,7 @@ class WindowsApplication(QWidget):
         ))
         self.update_button = QPushButton(tr("Download"))
         self.update_button.setProperty("vernier", "primary")
-        self.update_button.clicked.connect(self.open_update)
+        self.update_button.clicked.connect(self.download_update)
         self.update_button.setVisible(False)
         module.body.addWidget(self.update_button)
         return module
@@ -1135,9 +1155,12 @@ class WindowsApplication(QWidget):
             found = None
         self._update = found
         self.update_button.setText(tr("Download Beamer {version}").format(version=found[0]) if found else tr("Download"))
-        motion.set_shown(self.update_button, found is not None and not portal.sandboxed())
+        if portable_runtime.enabled() and found:
+            self.update_button.setText(tr("Download portable zip"))
+        motion.set_shown(self.update_button, found is not None and not portal.sandboxed()
+                         and (not portable_runtime.enabled() or bool(self.update_checker.download_url)))
         self.header_action.setText(tr("Beamer {version} is available…").format(version=found[0]) if found else tr("Beamer {version}").format(version=VERSION))
-        self.header_action.setEnabled(found is not None)
+        self.header_action.setEnabled(found is not None and not portal.sandboxed())
         self._refresh_update_notice()
 
     def _refresh_update_notice(self) -> None:
@@ -1172,6 +1195,13 @@ class WindowsApplication(QWidget):
     def open_update(self) -> None:
         if self._update:
             QDesktopServices.openUrl(QUrl(self._update[1]))
+
+    def download_update(self) -> None:
+        if portable_runtime.enabled():
+            if self._update and self.update_checker.download_url:
+                QDesktopServices.openUrl(QUrl(self.update_checker.download_url))
+        else:
+            self.open_update()
 
     def open_log_folder(self) -> None:
         folder = LOG_PATH.parent if LOG_PATH is not None else default_config_path().parent
@@ -1752,6 +1782,12 @@ class WindowsApplication(QWidget):
             if "identify_screens" in caps:
                 self._send_to(peer, protocol.identify_screens_msg(display_numbers(tiles.get(protocol.id_text(peer)))))
 
+    def _receive_identify_screens(self, peer, labels) -> None:
+        if isinstance(peer, bytes):
+            peer = protocol.id_text(peer)
+        if peer in {entry.get("id") for entry in peerlist.desktops(self.book.peers())}:
+            self.bridge.identify.emit(labels)
+
     def _on_identify_screens(self, labels) -> None:
         self._refresh_own_displays()
         displays = self._own_displays()
@@ -1858,14 +1894,14 @@ class WindowsApplication(QWidget):
     def _identity(self) -> dict:
         """This machine as a `hello` and a `welcome` say it (section 2)."""
         config = self._config or default_config()
-        name = (config.name or pairing.machine_name())[: protocol.MAX_NAME_CHARS]
+        name = machine_name(config.name)
         return {
             "id": protocol.read_id(config.machine_id) or b"",
             "name": name,
             "platform": OWN_PLATFORM,
             "app": VERSION[:32] if VERSION.isascii() and VERSION.isprintable() else "dev",
             # A swipe has no shortcut every Linux desktop shares, so Linux does not offer gestures.
-            "caps": [cap for cap in ("clipboard", "clipboard_image", "gestures", "media_keys", "text", "settings", "design_sync", "layout", "profiles", "displays", "identify_screens", "ping_rtt")
+            "caps": [cap for cap in ("clipboard", "clipboard_image", "gestures", "media_keys", "text", "settings", "design_sync", "layout", "profiles", "displays", "identify_screens", "ping_rtt", "motion_path")
                      if not (cap == "gestures" and OWN_PLATFORM == "linux")],
             "port": self._settings_port,
         }
@@ -3937,11 +3973,14 @@ class WindowsApplication(QWidget):
         identity = protocol.read_id(settings["machine_id"])
         if identity is None:
             return None
-        name = settings.get("name") or pairing.machine_name()
-        return PairingService(
+        name = machine_name(settings.get("name"))
+        service = PairingService(
             name, identity, OWN_PLATFORM, self._announced_port, self.book.peers, self._store_peer,
             on_paired=self.bridge.paired.emit, logger=LOGGER,
+            **({"bind_port": 0, "tcp_port": 0} if portable_runtime.enabled() else {}),
         )
+        service.active_discovery = portable_runtime.enabled()
+        return service
 
     def _store_peer(self, entry: dict, replaced) -> None:
         """PairingService's write, on a socket thread with the service's lock held: the new peer takes
@@ -4606,6 +4645,7 @@ class WindowsApplication(QWidget):
         self.host_readout.setAccessibleName(tr("This PC's address"))
         field(tr("This PC's address"), self.host_readout)
         self.port_entry = QLineEdit(str(current.port))
+        self.port_entry.setReadOnly(portable_runtime.enabled())
         self.port_entry.setMaximumWidth(240)
         field(tr("This PC's listening port"), self.port_entry)
         self.save_message = widgets.label("", "note", wrap=True)
@@ -4753,9 +4793,15 @@ class WindowsApplication(QWidget):
         return str(Path(sys.executable).resolve()), port
 
     def _check_firewall(self) -> None:
+        if portable_runtime.enabled():
+            self.firewall_note.setText(tr("Portable mode leaves Windows Firewall unchanged. Your network must already allow Beamer."))
+            self.firewall_button.hide()
+            return
         self._run_firewall(firewall_win.status, tr("Checking…"))
 
     def _firewall_action(self) -> None:
+        if portable_runtime.enabled():
+            return
         # Only the built exe changes the firewall, by the button or on its own. From source the
         # executable is python.exe, and repair() replaces Beamer's rules by name, so a test run on
         # the PC took the installed Beamer's rules with it and cut the Mac's link (29-09-2026).
@@ -4808,6 +4854,8 @@ class WindowsApplication(QWidget):
         threading.Thread(target=work, name="Beamer-firewall", daemon=True).start()
 
     def _on_firewall(self, status) -> None:
+        if portable_runtime.enabled():
+            return
         self._firewall_busy = False
         if self._closing:
             return
@@ -5045,7 +5093,7 @@ class WindowsApplication(QWidget):
 
     def start(self) -> None:
         self.update_checker.start()
-        if getattr(sys, "frozen", False) and firewall_win.is_elevated():
+        if not portable_runtime.enabled() and getattr(sys, "frozen", False) and firewall_win.is_elevated():
             # Beamer's own rules before any socket opens: a listener Windows has no rule for makes
             # it ask, and a click on Allow there writes rules for every network, public ones too,
             # where Beamer's are for private networks only. Not from source: see _firewall_action.
@@ -5054,6 +5102,9 @@ class WindowsApplication(QWidget):
             self._listen()
 
     def _rules_then_listen(self) -> None:
+        if portable_runtime.enabled():
+            self.bridge.rules_ready.emit()
+            return
         try:
             exe, port = self._firewall_target()
             status = firewall_win.status(exe, port)
@@ -5069,6 +5120,14 @@ class WindowsApplication(QWidget):
             return
         if self.pairing is not None:
             self.pairing.start()
+        if sys.platform == "win32" and self._input_controller_blocked:
+            self._input_controller_release = _claim_input_controller()
+            if self._input_controller_release is None:
+                self._set_status(ServerState.ERROR, tr("Another Beamer copy controls input on this PC. Quit it to use input in this copy."))
+                QTimer.singleShot(1000, self._listen)
+                return
+            self._input_controller_blocked = False
+            self._idle_pointer = self._make_idle_pointer()
         if self._config is not None and self._paired:
             self._start_receiver(self._config)
             self._start_sending(self._config)
@@ -5081,10 +5140,25 @@ class WindowsApplication(QWidget):
         # the receiver never starts, so nothing else would ever read it.
         self._check_firewall()
 
+    def _check_input_controller(self):
+        if (self._closing or not portable_runtime.enabled()
+                or not self._input_controller_release or not _installed_instance_running()):
+            return
+        # A legacy installed copy does not know the shared lease. Yield before the next
+        # refresh rather than letting its hooks and this copy's hooks keep running together.
+        self._input_controller_blocked = True
+        self.server.stop()
+        self._stop_sending()
+        release, self._input_controller_release = self._input_controller_release, None
+        release()
+        self._listen()
+
     def _configure_trigger(self, config: Config) -> None:
         self._trigger.configure(config.trigger_key, config.trigger_style, config.double_tap_ms)
 
     def _start_receiver(self, config: Config) -> None:
+        if getattr(self, "_input_controller_blocked", False):
+            return
         if self.server.listening and self._receiver_port != config.port:
             self.server.stop()
         self._receiver_port = config.port
@@ -5095,6 +5169,8 @@ class WindowsApplication(QWidget):
         when sending is on: they are the one part of Beamer that can take this
         PC's own keyboard away, so an install that never sends never installs
         them."""
+        if getattr(self, "_input_controller_blocked", False):
+            return
         if not self._any_send():
             return
         self._configure_trigger(config)
@@ -5215,7 +5291,7 @@ class WindowsApplication(QWidget):
     def _make_idle_pointer(self):
         """The pointer hiding of this desktop, or None where it cannot hide another app's pointer
         (Wayland). A run that died with the pointer hidden is undone first."""
-        if not getattr(desktop_win, "CAN_HIDE_POINTER", False):
+        if portable_runtime.enabled() or self._input_controller_blocked or not getattr(desktop_win, "CAN_HIDE_POINTER", False):
             return None
         try:
             desktop_win.restore_pointer()
@@ -5320,6 +5396,8 @@ class WindowsApplication(QWidget):
         box.setText(tr(
             '<b>Beamer {version}</b><br>One keyboard and mouse for all your Macs and PCs.<br><br><a href="{url}" style="color: {colour};">{link}</a>'
         ).format(version=VERSION, url=HOME_PAGE, colour=theme.colour("signal"), link=tr(HOME_PAGE_TEXT)))
+        if portable_runtime.enabled():
+            box.setInformativeText(tr("Portable — settings and pairing keys stay in this folder, protected by your passphrase. Administrator apps cannot be controlled."))
         box.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
         for text in box.findChildren(QLabel):
             text.setOpenExternalLinks(True)
@@ -5381,6 +5459,10 @@ class WindowsApplication(QWidget):
                 LOGGER.exception("Could not show the pointer on the way out")
         if hasattr(self, "tray"):
             self.tray.hide()
+        release = getattr(self, "_input_controller_release", None)
+        if release is not None:
+            self._input_controller_release = None
+            release()
         QApplication.quit()
 
     def closeEvent(self, event) -> None:
@@ -5669,6 +5751,8 @@ def _windows_kernel32():
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     kernel32.CreateMutexW.restype = ctypes.c_void_p
     kernel32.CreateMutexW.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_wchar_p]
+    kernel32.OpenMutexW.restype = ctypes.c_void_p
+    kernel32.OpenMutexW.argtypes = [ctypes.c_ulong, ctypes.c_int, ctypes.c_wchar_p]
     kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
     kernel32.GetCurrentProcess.restype = ctypes.c_void_p
     kernel32.GetCurrentProcessId.restype = ctypes.c_ulong
@@ -5697,7 +5781,7 @@ def _claim_instance():
         # through windll can read an error ctypes' own marshalling set in between,
         # and 183 (already exists) is the whole single-instance check.
         kernel32 = _windows_kernel32()
-        mutex = kernel32.CreateMutexW(None, False, "Local\\Beamer.Receiver")
+        mutex = kernel32.CreateMutexW(None, False, "Local\\Beamer.Receiver" + portable_runtime.instance_suffix())
         already_running = ctypes.get_last_error() == 183
         if not mutex:
             raise OSError("Beamer could not create its single-instance lock")
@@ -5710,6 +5794,33 @@ def _claim_instance():
     lock = QLockFile(str(Path(tempfile.gettempdir()) / f"Beamer.Receiver.{os.getuid()}.lock"))
     lock.setStaleLockTime(0)
     return lock.unlock if lock.tryLock(0) else None
+
+
+def _claim_input_controller():
+    """App windows may coexist; session-wide hooks and injected input have one owner."""
+    kernel32 = _windows_kernel32()
+    if portable_runtime.enabled() and _installed_instance_running():
+        # Older installed versions predate this lease. Their instance marker is enough to
+        # keep portable input inactive, without activating or stopping the installed app.
+        return None
+    mutex = kernel32.CreateMutexW(None, False, "Local\\Beamer.InputController")
+    already_running = ctypes.get_last_error() == 183
+    if not mutex:
+        return None
+    if already_running:
+        kernel32.CloseHandle(mutex)
+        return None
+    return lambda: kernel32.CloseHandle(mutex)
+
+
+def _installed_instance_running():
+    kernel32 = _windows_kernel32()
+    installed = kernel32.OpenMutexW(0x00100000, False, "Local\\Beamer.Receiver")
+    error = ctypes.get_last_error()
+    if installed:
+        kernel32.CloseHandle(installed)
+        return True
+    return error == 5
 
 
 # A relaunched Beamer starts while the one it replaces still holds the lock, and waits this long
@@ -5736,12 +5847,55 @@ def activate_existing_instance(hidden: bool, activation_token: Optional[str] = N
 
 
 def prepare_windows_startup() -> None:
-    if sys.platform == "win32":
+    if sys.platform == "win32" and not portable_runtime.enabled():
         autostart_win.migrate_legacy_task()
 
 
+def unlock_portable(parent=None) -> bool:
+    vault = PortableStore(portable_runtime.settings_path())
+    creating = not vault.exists
+    while True:
+        title = tr("Protect Beamer Portable") if creating else tr("Unlock Beamer Portable")
+        prompt = (tr("Choose a passphrase of at least 12 characters. You need it each time Beamer starts. "
+                     "It protects pairing keys if this folder is lost. A forgotten passphrase cannot be recovered.")
+                  if creating else tr("Enter the passphrase for this portable folder."))
+        password, accepted = QInputDialog.getText(parent, title, prompt, QLineEdit.EchoMode.Password)
+        if not accepted:
+            vault.lock()
+            return False
+        if creating:
+            if len(password) < 12:
+                password = ""
+                QMessageBox.warning(parent, title, tr("Use at least 12 characters for the passphrase."))
+                continue
+            confirmation, accepted = QInputDialog.getText(
+                parent, title, tr("Enter the passphrase again."), QLineEdit.EchoMode.Password)
+            if not accepted:
+                password = ""
+                vault.lock()
+                return False
+            if password != confirmation:
+                password = confirmation = ""
+                QMessageBox.warning(parent, title, tr("The passphrases do not match. Try again."))
+                continue
+            confirmation = ""
+        try:
+            vault.unlock(password)
+        except (PortableStoreError, OSError, ValueError):
+            QMessageBox.warning(parent, title, tr("The portable settings could not be unlocked or saved. "
+                                                 "Check the passphrase and that the folder is writable. Existing pairing keys have been kept."))
+        else:
+            portable_runtime.store = vault
+            return True
+        finally:
+            password = ""
+
+
 def main() -> None:
+    portable_runtime.initialise()
     arguments = parse_args()
+    if portable_runtime.enabled() and arguments.config.resolve() != portable_runtime.settings_path().resolve():
+        raise ConfigError("Portable mode cannot use a settings file outside its folder")
     if arguments.identify_x11 is not None:
         from identify_overlay import run_x11_helper
         sys.exit(run_x11_helper(arguments.identify_x11))
@@ -5772,7 +5926,7 @@ def main() -> None:
         if not kernel32.SetPriorityClass(kernel32.GetCurrentProcess(), 0x8000):  # ABOVE_NORMAL_PRIORITY_CLASS
             LOGGER.warning("Could not raise Beamer's priority: %s", ctypes.WinError(ctypes.get_last_error()))
         _stay_unthrottled(kernel32)
-    instance_signal = quit_signals = None
+    instance_signal = quit_signals = application = controller_release = None
     try:
         app = QApplication(sys.argv)
         app.setApplicationName("Beamer")
@@ -5780,14 +5934,22 @@ def main() -> None:
         app.setQuitOnLastWindowClosed(False)
         theme.init_fonts()
         app.setFont(theme.font(theme.TYPE["body"]))
+        if portable_runtime.enabled():
+            if not unlock_portable():
+                return
         try:
             startup_config = app_config.load_config(arguments.config.expanduser().resolve(), unpaired_ok=True)
             i18n.install(startup_config.language)
         except ConfigError:
             i18n.install("auto")
+        if sys.platform == "win32":
+            controller_release = _claim_input_controller()
         application = WindowsApplication(
-            arguments.config.expanduser().resolve(), start_after_first_paint=not arguments.hidden
+            arguments.config.expanduser().resolve(), start_after_first_paint=not arguments.hidden,
+            input_controller_available=sys.platform != "win32" or controller_release is not None,
         )
+        application._input_controller_release = controller_release
+        controller_release = None
         quit_signals = quit_signals_module.QuitSignals(application.quit, parent=app)
         instance_signal = InstanceSignal(application.show_window, parent=app)
         if not instance_signal.listening:
@@ -5802,7 +5964,12 @@ def main() -> None:
             quit_signals.close()
         if instance_signal is not None:
             instance_signal.close()
+        if application is not None:
+            application.quit()
+        if controller_release is not None:
+            controller_release()
         release()
+        portable_runtime.close()
 
 
 def import_probe(out_path: str, names: list) -> int:
@@ -5824,6 +5991,8 @@ def import_probe(out_path: str, names: list) -> int:
 
 
 def register_autostart_for_setup() -> int:
+    if portable_runtime.enabled():
+        return 1
     try:
         exe = autostart_win.installed_exe()
         if exe is None:
@@ -5836,6 +6005,8 @@ def register_autostart_for_setup() -> int:
 
 
 def cleanup_for_uninstall() -> int:
+    if portable_runtime.enabled():
+        return 1
     failed = False
     exe = autostart_win.installed_exe()
     if exe is None:

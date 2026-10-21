@@ -143,5 +143,71 @@ class NoticeTests(unittest.TestCase):
         self.assertIsNone(updates.visible_notice(None, True, ""))
 
 
+class PortableCheckerTests(unittest.TestCase):
+    NAME = "Beamer-Portable-1.5.10-windows-x64.zip"
+    URL = "https://github.com/kalkman-code/beamer/releases/download/v1.5.10/" + NAME
+
+    def make(self, assets, portable=True):
+        payload = release("v1.5.10", assets=assets)
+        results = []
+        checker = updates.Checker("1.5.9", lambda: True, results.append,
+                                  fetcher=lambda: json.dumps(payload).encode(), portable=portable)
+        checker.check_once()
+        return checker, results
+
+    def test_portable_download_keeps_the_release_page_for_whats_new(self):
+        checker, results = self.make([{"name": self.NAME, "browser_download_url": self.URL}])
+        page = "https://github.com/kalkman-code/beamer/releases/tag/v1.5.10"
+        self.assertEqual(checker.download_url, self.URL)
+        self.assertEqual(checker.latest, ("1.5.10", page))
+        self.assertEqual(results, [checker.latest])
+
+    def test_missing_portable_zip_never_offers_the_installer(self):
+        for assets in (None, [], {}, [None, "asset"],
+                       [{"name": "Beamer-Setup-1.5.10.exe", "browser_download_url": self.URL}]):
+            with self.subTest(assets=assets):
+                checker, results = self.make(assets)
+                self.assertEqual(checker.latest[0], "1.5.10")
+                self.assertIsNone(checker.download_url)
+                self.assertEqual(results, [checker.latest])
+
+    def test_untrusted_or_wrong_release_assets_are_rejected(self):
+        for url in (self.URL.replace("github.com", "github.com.evil.invalid"),
+                    self.URL.replace("https:", "http:"),
+                    self.URL.replace("/beamer/", "/another-project/"),
+                    self.URL.replace("/v1.5.10/", "/v1.5.9/"),
+                    self.URL + "?source=untrusted", self.URL + "#fragment",
+                    self.URL.replace(self.NAME, "Beamer-Setup-1.5.10.exe"),
+                    "https://evil.invalid/" + self.NAME):
+            with self.subTest(url=url):
+                checker, _ = self.make([{"name": self.NAME, "browser_download_url": url}])
+                self.assertIsNone(checker.download_url)
+
+    def test_installed_checker_keeps_its_existing_release_page_behaviour(self):
+        checker, results = self.make([{"name": self.NAME, "browser_download_url": self.URL}],
+                                     portable=False)
+        self.assertIsNone(checker.download_url)
+        self.assertEqual(results, [checker.latest])
+
+    def test_new_answer_clears_an_asset_from_the_previous_answer(self):
+        checker, _ = self.make([{"name": self.NAME, "browser_download_url": self.URL}])
+        checker.fetcher = lambda: json.dumps(release("v1.5.11", assets=[])).encode()
+        checker.check_once()
+        self.assertEqual(checker.latest[0], "1.5.11")
+        self.assertIsNone(checker.download_url)
+        checker.fetcher = lambda: json.dumps(release("v1.5.9")).encode()
+        checker.check_once()
+        self.assertIsNone(checker.latest)
+        self.assertIsNone(checker.download_url)
+
+    def test_failed_request_keeps_matching_cached_page_and_asset(self):
+        checker, _ = self.make([{"name": self.NAME, "browser_download_url": self.URL}])
+        previous = checker.latest
+        checker.fetcher = lambda: (_ for _ in ()).throw(OSError("synthetic offline"))
+        checker.check_once()
+        self.assertEqual(checker.latest, previous)
+        self.assertEqual(checker.download_url, self.URL)
+
+
 if __name__ == "__main__":
     unittest.main()

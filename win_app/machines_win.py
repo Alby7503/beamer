@@ -920,12 +920,12 @@ class PairingSheet(widgets.Module):
         `shown` (the window's Hide addresses) lets it."""
         listed = [item for item in machines if item.get("pair_id") or item.get("pairing") != pairing.PAIRING_V3]
         wheres = [shown(item["address"]) if shared else "" for item, shared in zip(listed, peerlist.sharing_a_name(listed))]
-        key = tuple((item["address"], item["name"], item.get("platform"), item.get("pairing"), item.get("pair_id"), where)
+        key = tuple((pairing.discovery_endpoint(item), item["name"], item.get("platform"), item.get("pairing"), item.get("pair_id"), where)
                     for item, where in zip(listed, wheres))
         if key == self._listed:
             return
         self._listed = key
-        chosen = self.chosen_machine()
+        chosen = pairing.refreshed_discovery(self.chosen_machine(), listed)
         self._machines = listed
         for button in list(self.group.buttons()):
             self.group.removeButton(button)
@@ -946,10 +946,12 @@ class PairingSheet(widgets.Module):
             # A list of machines reads down its left edge; the theme centres a choice.
             button.setStyleSheet("text-align: left; padding-left: 12px;")
             button.setProperty("address", item["address"])
-            button.clicked.connect(lambda _checked=False, address=item["address"]: self._pick(address))
+            button.setProperty("reply_port", pairing.discovery_endpoint(item)[1])
+            button.clicked.connect(lambda _checked=False, address=item["address"],
+                                   port=pairing.discovery_endpoint(item)[1]: self._pick(address, port))
             self.group.addButton(button)
             self.heard_layout.addWidget(button)
-            if chosen is not None and chosen["address"] == item["address"]:
+            if chosen is not None and pairing.discovery_endpoint(chosen) == pairing.discovery_endpoint(item):
                 button.setChecked(True)
         if chosen is not None and not any(b.isChecked() for b in self.group.buttons()):
             self._on_pick(None)
@@ -959,12 +961,14 @@ class PairingSheet(widgets.Module):
     def chosen_machine(self) -> Optional[dict]:
         for button in self.group.buttons():
             if button.isChecked():
-                return next((item for item in self._machines if item["address"] == button.property("address")), None)
+                return next((item for item in self._machines if pairing.discovery_endpoint(item) ==
+                             (button.property("address"), button.property("reply_port"))), None)
         return None
 
-    def _pick(self, address: str) -> None:
+    def _pick(self, address: str, reply_port=None) -> None:
         button = next((candidate for candidate in self.group.buttons()
-                       if candidate.property("address") == address), None)
+                       if candidate.property("address") == address
+                       and (reply_port is None or candidate.property("reply_port") == reply_port)), None)
         self.group.setExclusive(False)
         for candidate in self.group.buttons():
             candidate.setChecked(False)
@@ -972,7 +976,7 @@ class PairingSheet(widgets.Module):
         if button is not None:
             button.setChecked(True)
         self.address.clear()
-        self._on_pick(next((item for item in self._machines if item["address"] == address), None))
+        self._on_pick(self.chosen_machine())
         self._refresh_pair_button()
 
     def _typed_address(self, _text: str) -> None:

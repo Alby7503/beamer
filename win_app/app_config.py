@@ -32,6 +32,8 @@ from core import i18n
 from core import return_edge
 from core import ways, crossing_state
 from core import profiles
+from core import portable_runtime
+from core.portable_store import PortableStoreError
 from core.pairing import local_address_towards
 import tokens
 
@@ -223,6 +225,8 @@ def default_config() -> Config:
 
 
 def default_config_path() -> Path:
+    if portable_runtime.enabled():
+        return portable_runtime.settings_path()
     base = os.environ.get("LOCALAPPDATA") or os.environ.get("XDG_CONFIG_HOME")
     if base:
         return Path(base) / "Beamer" / "settings.json"
@@ -713,6 +717,12 @@ def learn_peer_id(settings: dict, index: int, peer_id: str) -> None:
 
 def _write_json(path: Path, payload: dict) -> None:
     """A new file beside the old, then a rename over it."""
+    if portable_runtime.enabled():
+        try:
+            _portable_store(path).write(payload)
+        except PortableStoreError as exc:
+            raise SettingsFileError("Portable settings could not be saved") from exc
+        return
     _backup_before_profile_upgrade(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary_path = None
@@ -740,11 +750,29 @@ def _write_json(path: Path, payload: dict) -> None:
 def _read_object(path: Path):
     """The JSON object in a file, or None when it is missing or does not parse. A file that cannot be
     read for any other reason (locked, denied) raises, so it is never taken for a missing one."""
+    if portable_runtime.enabled():
+        if Path(path).resolve() == legacy_config_path(portable_runtime.settings_path()).resolve():
+            return None
+        try:
+            settings = _portable_store(path).read()
+        except PortableStoreError as exc:
+            raise SettingsFileError("Portable settings could not be read") from exc
+        if settings:
+            settings["port"] = portable_runtime.reserve_listener(settings.get("port", 0))
+        return settings
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except (FileNotFoundError, ValueError):
         return None
     return raw if isinstance(raw, dict) else None
+
+
+def _portable_store(path):
+    if Path(path).resolve() != portable_runtime.settings_path().resolve():
+        raise SettingsFileError("Portable settings must stay beside the app")
+    if portable_runtime.store is None or not portable_runtime.store.is_unlocked:
+        raise SettingsFileError("Portable settings are locked")
+    return portable_runtime.store
 
 
 def load_settings(path: Path) -> dict:
@@ -753,8 +781,10 @@ def load_settings(path: Path) -> dict:
     if legacy_config_path(path) == path:
         raise ConfigError("the settings file is settings.json; config.json is 1.4.x's and is never written")
     legacy = _read_object(legacy_config_path(path))
-    if not path.exists():
+    if not path.exists() or (portable_runtime.enabled() and not _portable_store(path).read()):
         settings = migrate(legacy)
+        if portable_runtime.enabled():
+            settings["port"] = portable_runtime.reserve_listener()
         settings, notes = profiles.before_load(settings)
         _remember_profile_notes(path, notes)
         settings = crossing_state.migrate(settings, "pc")["settings"]
@@ -869,7 +899,7 @@ def _flat_from_settings(settings: dict) -> dict:
     return flat
 
 
-def _apply_flat(settings: dict, flat: dict) -> None:
+def _apply_flat(settings: dict, flat: dict, *, pin_address=False) -> None:
     """Write a Config's flat fields (from `config_to_dict`) into the settings: this PC's own, and the
     first desktop's address, name and switches, never a side or a zone. A token that is not that
     desktop's is a new pairing: it replaces that entry, and its zones point at the empty id until a link
@@ -903,6 +933,8 @@ def _apply_flat(settings: dict, flat: dict) -> None:
     # put the old one back.
     if flat["mac_host"] != peer.get("host"):
         peer.update(name=flat["paired_with"], hw=flat["mac_hardware_address"], host_pinned=True)
+    if pin_address and flat["mac_host"]:
+        peer["host_pinned"] = True
     peer.update(host=flat["mac_host"], send=flat["send_to_mac"], allow_drive=flat["allow_mac_to_drive"])
     if flat["port"] != old_port and peer.get("port") == old_port:
         peer["port"] = flat["port"]
@@ -955,7 +987,7 @@ class ReadFallbackPeerBook(receiver.PeerBook):
                     copy.deepcopy(list(settings.get("zones") or [])))
 
 
-def save_config(path: Path, config: Config) -> None:
+def save_config(path: Path, config: Config, *, pin_address=False) -> None:
     payload = config_to_dict(config)
     with SETTINGS_LOCK:
         settings = load_settings(path)
@@ -965,7 +997,7 @@ def save_config(path: Path, config: Config) -> None:
             except ValueError as exc:
                 raise ConfigError(str(exc)) from exc
         old_tokens = [entry.get("token") for entry in settings["peers"]]
-        _apply_flat(settings, payload)
+        _apply_flat(settings, payload, pin_address=pin_address)
         if old_tokens != [entry.get("token") for entry in settings["peers"]]:
             settings = crossing_state.paired(settings, platform="pc", own_displays={}, now=time.time())["settings"]
         write_settings(path, settings)
@@ -1008,6 +1040,8 @@ def _without_profile_state(settings: dict) -> dict:
 
 def _backup_before_profile_upgrade(path: Path) -> None:
     """Keep the exact schema-6 source before the first save of a profile-migrated file."""
+    if portable_runtime.enabled():
+        return
     backup = path.with_name("settings.json.before-1.5.5")
     if backup.exists():
         return

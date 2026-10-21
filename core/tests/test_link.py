@@ -608,7 +608,7 @@ class LinkLiveTests(unittest.TestCase):
 
     def test_a_full_queue_reports_failure(self):
         self.link._stall.set()
-        results = [self.link.send_input(protocol.mousemove_msg(1, 1)) for _ in range(2100)]
+        results = [self.link.send_input(protocol.key_msg("keydown", "a")) for _ in range(2100)]
         self.link._stall.clear()
         self.assertIn(False, results)
         self.assertEqual(results.count(True), 2048)

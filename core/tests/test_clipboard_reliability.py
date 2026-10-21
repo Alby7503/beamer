@@ -163,14 +163,19 @@ class ClipboardReliability(unittest.TestCase):
         self.responder._clipboard_worker()
         self.assertEqual(self.sent, [protocol.clipboard_msg("local immediately after write")])
 
-    def test_a_contended_return_read_recovers_at_the_same_stamp(self):
-        original = self.clipboard.get_contents
-        reads = iter([False, True])
+    def test_an_empty_return_read_finishes_without_retrying_or_warning(self):
+        with mock.patch.object(self.clipboard, "get_contents", return_value=(None, None)) as read, \
+                mock.patch.object(receiver.time, "sleep") as sleep, \
+                mock.patch.object(receiver.LOGGER, "warning") as warning:
+            self.return_clipboard()
+        self.assertEqual(self.sent, [])
+        self.assertEqual(read.call_count, 1)
+        sleep.assert_not_called()
+        warning.assert_not_called()
 
-        def read():
-            return original() if next(reads) else (None, None)
-
-        with mock.patch.object(self.clipboard, "get_contents", side_effect=read), \
+    def test_a_native_failure_uses_the_strict_reader_and_recovers(self):
+        self.clipboard.read_contents = mock.Mock(side_effect=[OSError("clipboard busy"), ("copied remotely", None)])
+        with mock.patch.object(self.clipboard, "get_contents", return_value=(None, None)), \
                 mock.patch.object(receiver.time, "sleep"):
             self.return_clipboard()
         self.assertEqual(self.sent, [protocol.clipboard_msg("copied remotely")])
@@ -190,20 +195,20 @@ class ClipboardReliability(unittest.TestCase):
         self.assertEqual(self.sent, [protocol.clipboard_msg("copied remotely")])
 
     def test_a_local_copy_after_let_go_is_never_read_for_a_return_retry(self):
-        with mock.patch.object(self.clipboard, "get_contents", return_value=(None, None)), \
+        with mock.patch.object(self.clipboard, "get_contents", side_effect=OSError("clipboard busy")), \
                 mock.patch.object(receiver.time, "sleep", side_effect=lambda _: self.clipboard.copy("private local")):
             self.return_clipboard()
         self.assertEqual(self.sent, [])
         self.assertEqual(self.clipboard.text, "private local")
 
     def test_a_new_owner_cancels_a_return_retry(self):
-        with mock.patch.object(self.clipboard, "get_contents", return_value=(None, None)), \
+        with mock.patch.object(self.clipboard, "get_contents", side_effect=OSError("clipboard busy")), \
                 mock.patch.object(receiver.time, "sleep", side_effect=lambda _: setattr(self.responder, "_owner", self.link)):
             self.return_clipboard()
         self.assertEqual(self.sent, [])
 
     def test_a_closed_link_cancels_a_return_retry(self):
-        with mock.patch.object(self.clipboard, "get_contents", return_value=(None, None)), \
+        with mock.patch.object(self.clipboard, "get_contents", side_effect=OSError("clipboard busy")), \
                 mock.patch.object(receiver.time, "sleep", side_effect=lambda _: self.link.closed.set()):
             self.return_clipboard()
         self.assertEqual(self.sent, [])

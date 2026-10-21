@@ -527,6 +527,9 @@ def release_gameinput_foreground(after: Optional[Callable[[], None]] = None) -> 
     session thread that must keep draining pings -- then run `after`. False
     when GameInput is not in front, or a restart is already running or ran
     within the cooldown."""
+    from core import portable_runtime
+    if portable_runtime.enabled():
+        return False
     if foreground_class() != GAMEINPUT_WINDOW_CLASS:
         return False
     if time.monotonic() - _gameinput_restarted_at[0] < GAMEINPUT_RESTART_COOLDOWN_SECONDS:
