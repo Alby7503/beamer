@@ -70,6 +70,7 @@ class FakeLinks:
         self.synced = []
         self.fail_input = False
         self.trip = None
+        self.backlog = 0
 
     def start(self):
         pass
@@ -113,6 +114,9 @@ class FakeLinks:
 
     def round_trip_ms(self, peer):
         return self.trip
+
+    def pending(self, peer):
+        return self.backlog
 
     def follow(self, machines):
         pass

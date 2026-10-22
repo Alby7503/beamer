@@ -91,6 +91,39 @@ class ReceiverQueuedGeometryTests(unittest.TestCase):
                 self.assertEqual(self.deliver(moves, pointer, None, True, sender=True),
                                  self.deliver(moves, pointer, None, False))
 
+    def test_a_long_bent_drag_collapses_to_one_native_move(self):
+        # GH15c: replaying every bend of a 1000 Hz drag let 1.5.10 fall seconds behind.
+        moves = [(2, 0), (0, 2), (-2, 0), (0, -1)] * 10
+        for speed in (None, 1.4):
+            with self.subTest(speed=speed):
+                direct_scale = None if speed is None else receiver.InputScale(speed)
+                batch_scale = None if speed is None else receiver.InputScale(speed)
+                direct = self.deliver(moves, (500, 500), None, False,
+                                      input_scale=direct_scale, held_button="left")
+                calls = []
+                batch = self.deliver(moves, (500, 500), None, True, sender=True, calls=calls,
+                                     input_scale=batch_scale, held_button="left")
+                self.assertEqual(batch, direct)
+                self.assertEqual(len(calls), 1)
+                if speed is not None:
+                    self.assertEqual(batch_scale._carry, direct_scale._carry)
+
+    def test_a_long_path_near_a_wall_collapses_to_one_clipped_native_move(self):
+        moves = [(3, 1), (-1, 2), (4, -1), (-2, -2), (3, 0)] * 8
+        calls = []
+        cursor, switches = self.deliver(moves, (1900, 500), None, True, sender=True, calls=calls)
+        self.assertEqual((cursor, switches), ((1919, 500), 0))
+        self.assertEqual(calls, [("move", 20, 2), ("move", 36, -2)])
+
+    def test_a_long_path_at_an_armed_edge_still_crosses(self):
+        moves = [(1, 1), (1, -1)] * 20
+        calls = []
+        result = self.deliver(moves, (1915, 500),
+                              return_edge.ReturnEdge("right", resistance_px=10, clock=lambda: 0),
+                              True, sender=True, calls=calls)
+        self.assertEqual(result, ((1919, 500), 1))
+        self.assertEqual(calls, [("move", 4, 0)])
+
     def test_unarmed_interior_and_parallel_wall_paths_still_batch_native_calls(self):
         for pointer in ((500, 500), (1919, 500)):
             with self.subTest(pointer=pointer):

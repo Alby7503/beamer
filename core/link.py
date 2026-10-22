@@ -228,6 +228,12 @@ class OutboundLink:
     def live(self):
         return self._live
 
+    def pending(self):
+        """Input queued to be written plus input written and not yet acknowledged: how far behind
+        the peer this link is."""
+        with self._lock:
+            return len(self._outbox) + len(self._sent_at)
+
     # Reading the entry
 
     def entry(self):

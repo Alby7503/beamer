@@ -731,6 +731,15 @@ class SettingsStore:
             raise SettingsError("a zone names a peer that is not in the list")
 
     def _write(self, settings):
+        # Every writer ends here, so a file this build cannot read (a newer Beamer's, or damaged) is
+        # never replaced by one written from defaults; moving it aside is the user's call.
+        if self.path.exists():
+            try:
+                existing = json.loads(self.path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                existing = None
+            if not isinstance(existing, dict) or existing.get("schema") != SCHEMA:
+                raise SettingsError(f"{self.path.name} is not a schema {SCHEMA} settings file, and is left as it is")
         _backup_before_profile_upgrade(self.path)
         self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         try:

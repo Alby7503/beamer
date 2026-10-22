@@ -1398,6 +1398,16 @@ class GeminiFindingsTests(unittest.TestCase):
             link._check_sent_record()
 
 
+    def test_pending_counts_input_waiting_to_be_written_and_input_not_yet_acknowledged(self):
+        side = Side(None)
+        link = side.link()
+        self.assertEqual(link.pending(), 0)
+        link._outbox.append(protocol.mousemove_msg(1, 1))
+        link._outbox.append(protocol.mousemove_msg(2, 2))
+        link._sent_at.append((1, 0.0))
+        self.assertEqual(link.pending(), 3)
+
+
 class RoundTripLogTests(unittest.TestCase):
     """Section 9: every 60 seconds while input is on the link, the count, median, 95th percentile,
     largest and mean held_us of the round trips measured since the last line."""

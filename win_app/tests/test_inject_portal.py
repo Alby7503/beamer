@@ -175,12 +175,16 @@ class RemoteTest(unittest.TestCase):
         self.assertEqual([item[2:] for item in self.ei.sends("absolute")], [(100.0, 100.0), (110.0, 95.0), (1919.0, 95.0)])
         self.assertEqual(desktop_portal.cursor_position(), (1919, 95))
 
-    def test_a_push_places_then_moves_on_the_session_thread(self):
+    def test_a_push_places_then_moves_relatively_on_the_session_thread(self):
+        # KWin 6.7.5 gives absolute motion a zero delta (pointer_input.cpp processMotionAbsolute)
+        # and its barrier spy fires only on a non-zero one, so an absolute push never captures.
         self.up()
         inject_portal.push(200, 300, [(10, 0), (0, -5)], lambda: True)
-        wait_for(lambda: len(self.ei.sends("absolute")) == 3, what="the shortcut push")
-        self.assertEqual([item[2:] for item in self.ei.sends("absolute")],
-                         [(200.0, 300.0), (210.0, 300.0), (210.0, 295.0)])
+        wait_for(lambda: len(self.ei.sends("motion")) == 2, what="the shortcut push")
+        self.assertEqual([item[1:] for item in self.ei.sends("absolute")], [("absolute", 200.0, 300.0)])
+        self.assertEqual([item[1:] for item in self.ei.sends("motion")],
+                         [("pointer", 10, 0), ("pointer", 0, -5)])
+        self.assertEqual(desktop_portal.cursor_position(), (210, 295))
 
     def test_a_queued_push_is_dropped_when_its_capture_deadline_passes(self):
         checked = threading.Event()

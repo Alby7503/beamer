@@ -764,10 +764,14 @@ class WindowsApplication(QWidget):
         except ConfigError as exc:
             LOGGER.info("Configuration is not ready: %s", exc)
             self._status = ServerState.ERROR
-            self._status_detail = (
-                "Settings could not be read: see the log" if isinstance(exc, SettingsFileError)
-                else "Not paired yet: press Pair a machine on Overview"
-            )
+            if isinstance(exc, SettingsFileError):
+                # _config stays None: that is what every page reads as "no settings to show".
+                self._status_detail = (
+                    "Settings could not be read. The file may be from a newer Beamer; it is left as it is. "
+                    "Install the newer Beamer, or move settings.json aside to start fresh."
+                )
+            else:
+                self._status_detail = "Not paired yet: press Pair a machine on Overview"
 
         # Announces this PC from launch, configured or not: pairing is how a fresh install gets its
         # first peer, so it cannot wait for the receiver to be listening. Without a readable
@@ -2729,6 +2733,8 @@ class WindowsApplication(QWidget):
         return dict(platform="pc", capable=self._layout_capable(), live=self._live, gone=self._gone, now=time.time())
 
     def _layout_capable(self) -> set:
+        if self._config is None:
+            return set()
         held = {entry.get("id") for entry in self._peer_entries
                 if "layout" in entry.get("caps", ()) or "caps" not in entry}
         known = self._design_peer_caps()

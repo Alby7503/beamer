@@ -715,6 +715,19 @@ def learn_peer_id(settings: dict, index: int, peer_id: str) -> None:
     peers[index]["id"] = peer_id
 
 
+def _refuse_unreadable_target(path: Path) -> None:
+    """Every writer ends here, so a settings file this build cannot read (a newer Beamer's, or damaged)
+    is never replaced by one written from defaults; the file is the user's to move aside."""
+    try:
+        existing = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return
+    except (OSError, ValueError):
+        existing = None
+    if not isinstance(existing, dict) or existing.get("schema") != SCHEMA:
+        raise SettingsFileError(f"{path} is not a version {SCHEMA} Beamer settings file, and is left as it is")
+
+
 def _write_json(path: Path, payload: dict) -> None:
     """A new file beside the old, then a rename over it."""
     if portable_runtime.enabled():
@@ -723,6 +736,7 @@ def _write_json(path: Path, payload: dict) -> None:
         except PortableStoreError as exc:
             raise SettingsFileError("Portable settings could not be saved") from exc
         return
+    _refuse_unreadable_target(path)
     _backup_before_profile_upgrade(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary_path = None

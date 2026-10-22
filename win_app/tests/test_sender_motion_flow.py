@@ -28,8 +28,9 @@ class SenderMotionFlowTests(unittest.TestCase):
         self.assertEqual(sum(a.message["data"]["dy"] for a in list(waiting)[:-2]), 0)
         self.assertEqual(waiting[-2].message["type"], "keydown")
 
-    def test_worker_sends_first_immediately_and_flushes_trailing_motion_when_idle(self):
-        rig = self.rig()
+    def run_worker(self, rig):
+        """Runs the outbound worker over one move that queues a second inside its send and a third
+        inside its sleep; returns what it sent and every sleep it took."""
         sent = []
         clock = [10.0]
         sleeps = []
@@ -50,10 +51,41 @@ class SenderMotionFlowTests(unittest.TestCase):
         rig.sender._queue([owner.Send(B, protocol.mousemove_msg(1, 1))])
         with mock.patch.object(sender.time, "monotonic", side_effect=lambda: clock[0]), mock.patch.object(sender.time, "sleep", side_effect=sleep):
             rig.sender._outbound_worker()
+        return sent, sleeps
+
+    def test_backed_up_link_paces_motion_and_flushes_trailing_motion(self):
+        rig = self.rig()
+        rig.links.backlog = sender.PACE_BACKLOG
+        sent, sleeps = self.run_worker(rig)
         self.assertEqual([(m["data"]["dx"], m["data"]["dy"]) for m in sent], [(1, 1), (6, 8)])
         self.assertEqual(len(sleeps), 1)
         self.assertAlmostEqual(sleeps[0], .002)
         self.assertEqual(rig.sender._outbound.unfinished_tasks, 0)
+
+    def test_idle_link_sends_motion_at_once_without_pacing(self):
+        rig = self.rig()
+        rig.links.backlog = sender.PACE_BACKLOG - 1
+        sent, sleeps = self.run_worker(rig)
+        self.assertEqual(sleeps, [])
+        self.assertEqual([(m["data"]["dx"], m["data"]["dy"]) for m in sent], [(1, 1), (2, 3)])
+        self.assertEqual(rig.sender._outbound.unfinished_tasks, 0)
+
+    def test_pacing_follows_the_backlog_of_the_peer_the_move_is_for(self):
+        rig = self.rig()
+        asked = []
+        rig.links.pending = lambda peer: asked.append(peer) or 0
+        self.run_worker(rig)
+        self.assertEqual(set(asked), {B})
+
+    def test_link_set_reports_a_peers_unsent_and_unacknowledged_input(self):
+        class Linked:
+            def pending(self):
+                return 7
+
+        links = sender.LinkSet(mock.Mock(_peers={}), is_local=lambda host: False)
+        links._by_peer[B] = Linked()
+        self.assertEqual(links.pending(B), 7)
+        self.assertEqual(links.pending(b"\x01" * 16), 0)
 
     def test_pending_high_polling_samples_are_bounded_relative_batches(self):
         rig = self.rig()

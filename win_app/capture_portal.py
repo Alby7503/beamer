@@ -5,8 +5,9 @@ Wayland lets no app see input meant for another, so capture is the desktop's. Be
 barriers on the outside edges of this machine's zones (the edge, its thirds, or a corner's two
 walls) and the compositor, when the pointer pushes through one, captures every keyboard and
 pointer and sends their events to Beamer over libei until Beamer lets go (Release). Nothing else
-can start a capture, so input leaves this machine only across an edge: the shortcut and the tray
-bring it home but cannot send it away, and Beamer sees no key at all while input is here.
+can start a capture, so input leaves this machine only across an edge: the shortcut (heard through
+GlobalShortcuts) pushes the pointer through a barrier with relative RemoteDesktop motion, and
+Beamer sees no other key at all while input is here.
 
 A push into a barrier is not yet a crossing. The barrier holds the pointer, as Windows holds it at
 the edge of the desktop, and the movement that follows feeds the sender's own zone models, so the
@@ -479,6 +480,7 @@ class Hooks:
         selected = barriers(models, self._zones, display_map=display_map,
                             warn_unmatched=self._warn_unmatched_display)
         if not selected:
+            LOGGER.info("Shortcut push: no placed barrier leads to that machine")
             return False
         wall, (x1, y1, x2, y2) = selected[0]
         if wall == "right":
@@ -503,6 +505,7 @@ class Hooks:
 
         nx, ny = _NORMAL[wall]
         moves = [(nx * PUSH_STEP_PX, ny * PUSH_STEP_PX) for _ in range(PUSH_STEPS)]
+        LOGGER.info("Shortcut push through the %s barrier from %s", wall, start)
         inject_portal.push(*start, moves, wanted)
         return True
 
@@ -852,6 +855,7 @@ class Hooks:
             else:
                 pending = None
         if pending is not None:
+            LOGGER.info("Shortcut push: the desktop did not capture at the %s barrier in time", pending[1])
             try:
                 pending[3]()
             except Exception:

@@ -19,10 +19,11 @@ at once. Test builds appear on the releases page as pre-releases.
 
 ## Pull requests
 
-Beamer is GPL-3.0 and has one author. A pull request from anyone else changes that, so before one
-is merged I will ask you to confirm the change is your own work and that you license it under
-GPL-3.0, and possibly more. For anything bigger than a small, obvious fix, open an issue first so
-we agree the approach before you write code.
+Pull requests are welcome. Sign off every commit with `git commit -s`. The sign-off is the
+[Developer Certificate of Origin](https://developercertificate.org): it confirms the change is your
+own work, or that you have the right to submit it, and that you license it under GPL-3.0-only, the
+licence Beamer is released under. There is no separate contributor agreement. For anything bigger
+than a small, obvious fix, open an issue first so we agree the approach before you write code.
 
 ## Building it
 

@@ -581,9 +581,9 @@ class Remote:
             if code in LOCK_KEYS and not down:
                 self._locks_due = time.monotonic() + LOCK_SECONDS
 
-    def move_by(self, dx: float, dy: float) -> None:
+    def move_by(self, dx: float, dy: float, relative: bool = False) -> None:
         x, y = desktop_portal.cursor_position()
-        if self._with(CAP_POINTER_ABSOLUTE) is not None:
+        if self._with(CAP_POINTER_ABSOLUTE) is not None and not (relative and self._with(CAP_POINTER)):
             self.place(x + dx, y + dy)
             return
         device = self._with(CAP_POINTER)
@@ -808,8 +808,10 @@ def push(x: int, y: int, moves: List[Tuple[int, int]], wanted: Callable[[], bool
         if not wanted():
             return
         session.place(x, y)
+        # Relative, never absolute: KWin 6.7.5 gives absolute motion a zero delta and its
+        # InputCapture barriers fire only on a non-zero one (BarrierSpy::pointerMotion).
         for dx, dy in moves:
-            session.move_by(dx, dy)
+            session.move_by(dx, dy, relative=True)
 
     remote().submit(go)
 

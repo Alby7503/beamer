@@ -1203,7 +1203,10 @@ def coalesce_mousemove(previous: dict, current: dict, *, preserve_path=True):
     if preserve_path:
         samples = before.get("samples", [[before["dx"], before["dy"]]]) + after.get("samples", [[after["dx"], after["dy"]]])
         if len(samples) > MOTION_SAMPLES_MAX:
-            return None
+            # A path this long means the link is behind. Refusing the merge queued a fresh record
+            # behind every 64 samples, which is how a 1000 Hz hand fell seconds behind (GH15c), so
+            # the latest position wins as one step.
+            samples = [[dx, dy]]
         merged["data"]["samples"] = samples
     return merged
 

@@ -126,6 +126,10 @@ IDLE_TAKEOVER_SECONDS = 3.0
 OUTBOX_LIMIT = 512
 INBOX_LIMIT = 512
 INBOX_BYTES = protocol.MAX_FRAME_BYTES
+# The longest queued path still replayed one native move per sample near a wall or along a bent
+# drag. A longer one means the link is behind, and replaying it costs more than the time it covers
+# (GH15c: 1.5.10 fell seconds behind a 1000 Hz hand), so it goes as one move to its latest position.
+MOTION_REPLAY_SAMPLES = 4
 
 ADMITTED = "admitted"
 WRONG_ID = "wrong_id"
@@ -1150,6 +1154,9 @@ class LinkResponder:
                 safe = safe and isinstance(screen, crossing.Rect) and inside(screen)
             if safe and model._at_edge(monitors, pointer, display_map):
                 safe = False
+        if not safe and len(read["samples"]) > MOTION_REPLAY_SAMPLES:
+            self._apply_collapsed_locked(link, read, after, geometry)
+            return
         # Every sample still feeds pressure and decay. Native movement is combined only when
         # no moving axis can reach a wall and no drag needs the intermediate path.
         # A stationary axis may already be against an unused wall.
@@ -1174,6 +1181,44 @@ class LinkResponder:
                 self._inject_timed_locked(link, dict(read, dx=scaled_dx, dy=scaled_dy), scaled=True)
             else:
                 self._inject_timed_locked(link, read)
+
+    def _apply_collapsed_locked(self, link, read, after, geometry):
+        """A path too long to replay, as at most two moves: up to the sample that first reaches a
+        wall, then the rest, so an armed edge still feels the push past it. The zones see each move
+        once with the pointer where it is, the platform clips it, and each sample is still scaled in
+        turn so the fractional carry matches the path's."""
+        monitors, pointer, _display_map = geometry
+        samples = read["samples"]
+        scale = self.input_scale.pointer if self.input_scale is not None else 1.0
+        x, y = pointer
+        split = len(samples)
+        for index, (dx, dy) in enumerate(samples):
+            x, y = x + dx * scale, y + dy * scale
+            if not any(screen.x < x < screen.right and screen.y < y < screen.bottom for screen in monitors):
+                split = index + 1
+                break
+        for part in (samples[:split], samples[split:]):
+            if not part:
+                continue
+            move = {key: value for key, value in read.items() if key != "samples"}
+            move.update(dx=sum(dx for dx, _dy in part), dy=sum(dy for _dx, dy in part))
+            was_live = self._zones_live
+            zones_at = time.monotonic()
+            consumed = self._zones_locked(link, move, after)
+            link.timing.add("zones", time.monotonic() - zones_at)
+            if self._owner is not link or (was_live and not self._zones_live):
+                return
+            if consumed:
+                continue
+            if self.input_scale is None:
+                self._inject_timed_locked(link, move)
+                continue
+            scaled_dx = scaled_dy = 0
+            for dx, dy in part:
+                part_dx, part_dy = self.input_scale.move(dx, dy)
+                scaled_dx += part_dx
+                scaled_dy += part_dy
+            self._inject_timed_locked(link, dict(move, dx=scaled_dx, dy=scaled_dy), scaled=True)
 
     def _apply_input_locked(self, link, read, after):
         zones_at = time.monotonic()

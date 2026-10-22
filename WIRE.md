@@ -555,7 +555,11 @@ Either way:
 - **`mousemove`**: `dx` and `dy` are integers from -65535 to 65535, relative motion in the
   sender's logical pixels (points on a Mac) after its own acceleration; positive `dy` is down.
   The sender keeps the fractions and sends whole pixels. A phone sends its own points after its
-  acceleration curve.
+  acceleration curve. To a peer with the `motion_path` capability, moves merged while the link is
+  behind carry `samples`, at most 64 `[dx, dy]` pairs summing to `dx` and `dy`; past 64 the path
+  collapses to the latest position, one pair. A receiver replays at most four samples near a wall
+  or along a bent drag and moves a longer path in at most two steps, the second from the first wall
+  it reaches.
 - **`scroll`**: `dy` and `dx` are numbers from -65535 to 65535; `mode` is `"pixel"` for a
   trackpad's continuous delta in points, or `"line"` for whole wheel notches. Both are in the Mac's
   convention, as version 5 sends them: `dy` and `dx` are Core Graphics' scroll axes 1 and 2 as a

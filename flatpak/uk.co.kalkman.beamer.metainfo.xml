@@ -43,6 +43,9 @@
   </screenshots>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="1.5.11" date="2026-10-22">
+      <description><p>Fixes the pointer falling seconds behind when a 1000 Hz mouse bends, reverses or drags: once the link is behind, the pointer now goes straight to its latest position instead of replaying every step. Clicks, keys, scrolling and the clipboard still arrive in order around the motion.</p><p>Moves are sent at once while the other machine keeps up, and paced only once it falls behind. A settings file this version cannot read, such as one written by a newer Beamer, no longer crashes the window and is never overwritten.</p></description>
+    </release>
     <release version="1.5.10" date="2026-10-21">
       <description><p>Avoids repeatedly reading clipboard contents that cannot be shared and removes an unnecessary wait when returning with an empty clipboard. Failed clipboard reads can still retry.</p><p>Limits repeated Identify screens requests and leaves machines without an active desktop link out. Disabling update checks also clears the Mac menu's stale update action. Flatpak update actions consistently point to store update guidance. Windows input recovery clears stale modifiers after returning from the secure desktop.</p><p>The separate Windows portable package keeps its settings beside the executable and protects them with a passphrase. It needs no installation or administrator rights and does not change startup tasks or firewall rules. It cannot control elevated applications or the secure desktop. Discovery keeps installed and portable copies separate without duplicating replies sent through temporary network sockets.</p></description>
     </release>

@@ -44,6 +44,10 @@ LOGGER = logging.getLogger(__name__)
 
 SEND_QUEUE_SIZE = 4096
 MOTION_INTERVAL_SECONDS = 0.002
+# Moves are paced only once this much input is queued or unacknowledged on the link: the 2 ms wait
+# exists to stop a 1000 Hz stream flooding a peer that is behind, and costs a move about a
+# millisecond when the peer is not, so a link that is keeping up is sent every move at once.
+PACE_BACKLOG = 4
 MONITORS_MAX_AGE_SECONDS = 1.0
 TICK_SECONDS = 0.1
 ROUND_TRIP_MAX_AGE_SECONDS = 5.0
@@ -1172,7 +1176,7 @@ class LinkSender:
                 motion = isinstance(action, owner_module.Send) and action.message.get("type") == protocol.MSG_MOUSEMOVE
                 if motion:
                     delay = next_motion_at - time.monotonic()
-                    if delay > 0:
+                    if delay > 0 and self.links.pending(action.peer) >= PACE_BACKLOG:
                         # Python's Windows sleep uses a high-resolution waitable timer; an Event
                         # wait can round this short interval to the system's 15.6 ms timer tick.
                         time.sleep(delay)
@@ -1885,6 +1889,10 @@ class LinkSet:
         link = self._link(peer)
         if link is not None:
             link.drop(reason)
+
+    def pending(self, peer) -> int:
+        link = self._link(peer)
+        return link.pending() if link is not None else 0
 
     def round_trip_ms(self, peer) -> Optional[int]:
         """The upper median of the last few trips, with the time the peer held each ACK taken off, or

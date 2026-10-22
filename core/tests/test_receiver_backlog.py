@@ -29,7 +29,12 @@ class ReceiverBacklogTests(unittest.TestCase):
     def test_1000_hz_drag_stays_current_and_releases_the_button(self):
         self.load(drag=True)
 
-    def load(self, drag):
+    def test_1000_hz_bending_hand_drag_stays_current(self):
+        # GH15c: a real hand bends on almost every 1000 Hz sample; 1.5.10 replayed each bend natively
+        # and fell seconds behind.
+        self.load(drag=True, path=((2, 0), (1, 2), (-2, 1), (-1, -2), (2, -1)))
+
+    def load(self, drag, path=((1, 0),)):
         machine, link = self.owner()
         if drag:
             pressed = link.input({"type": "mousedown", "data": {"button": "left"}})
@@ -58,7 +63,7 @@ class ReceiverBacklogTests(unittest.TestCase):
             deadline = started + index / 1000
             time.sleep(max(0, deadline - time.monotonic()))
             sent[index + first_seq] = time.monotonic()
-            link.move(1, 0)
+            link.move(*path[index % len(path)])
             highest = completed[-1][0] if completed else first_seq - 1
             peak_pending = max(peak_pending, index + first_seq - highest)
         sending_seconds = time.monotonic() - started
@@ -75,14 +80,15 @@ class ReceiverBacklogTests(unittest.TestCase):
             "final_latency_ms": round((completed[-1][1] - sent[last_seq]) * 1000, 2),
         }
         print("receiver backlog load " + json.dumps(metrics, sort_keys=True), flush=True)
-        self.assertEqual(sum(call[1] for call in moves), 400)
-        self.assertEqual(sum(call[2] for call in moves), 0)
+        self.assertEqual(sum(call[1] for call in moves), sum(path[index % len(path)][0] for index in range(400)))
+        self.assertEqual(sum(call[2] for call in moves), sum(path[index % len(path)][1] for index in range(400)))
         if drag:
             released = link.input({"type": "mouseup", "data": {"button": "left"}})
             self.assertIsNotNone(link.acked(released))
             self.assertEqual(machine.injected()[0], ("button", "left", True))
             self.assertEqual(machine.injected()[-1], ("button", "left", False))
         self.assertLess(metrics["final_latency_ms"], 200, metrics)
+        self.assertLess(metrics["latency_p95_ms"], 100, metrics)
         self.assertLess(peak_pending, 100, metrics)
         self.assertLess(len(moves), 200, metrics)
 
