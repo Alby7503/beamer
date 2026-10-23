@@ -7,6 +7,7 @@ from unittest import mock
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 import app_config
+import platform_parts
 from core import effects
 from core import ways
 import pages_win
@@ -367,13 +368,14 @@ class CrossingPageTest(unittest.TestCase):
         choice._buttons["quarter"].click()
         self.assertEqual(app_config.load_config(self.path).frame_rate, "quarter")
 
-    def test_mouse_only_switch_saves_applies_and_reflects_without_resaving(self):
+    def test_mouse_only_switch_saves_applies_when_supported_and_reflects_without_resaving(self):
         from unittest import mock
 
         self.assertFalse(self.page.mouse_only_switch.isChecked())
         self.page.mouse_only_switch.click()
         self.assertTrue(app_config.load_config(self.path).mouse_only)
-        self.assertTrue(self.page.sender._ignore_gate.mouse_only)
+        wayland = sys.platform.startswith("linux") and platform_parts.session(os.environ) == "wayland"
+        self.assertEqual(self.page.sender._ignore_gate.mouse_only, not wayland)
         config = app_config.load_config(self.path)
         config.mouse_only = False
         with mock.patch.object(self.page, "_persist") as persist:

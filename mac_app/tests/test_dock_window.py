@@ -25,6 +25,17 @@ REGULAR, ACCESSORY = AppKit.NSApplicationActivationPolicyRegular, AppKit.NSAppli
 
 
 class DockWindowTests(unittest.TestCase):
+    def test_menu_bar_toggle_changes_the_saved_dock_choice_and_reflects_the_tick(self):
+        self.tray.control_window = self.window
+        self.tray.dock_item = types.SimpleNamespace(state=True)
+        self.tray.apply_activation_policy(window_open=False)
+        kvm_bridge_app.TrayApp.toggle_dock(self.tray, None)
+        self.assertFalse(self.store.current()["show_in_dock"])
+        self.assertFalse(self.tray.dock_item.state)
+        kvm_bridge_app.TrayApp.toggle_dock(self.tray, None)
+        self.assertTrue(self.store.current()["show_in_dock"])
+        self.assertTrue(self.tray.dock_item.state)
+
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)

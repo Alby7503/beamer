@@ -342,8 +342,7 @@ class StatusBridge(QObject):
     alert = Signal(str, str)
     # (version, url) when a newer Beamer is out, else None.
     update = Signal(object)
-    # The firewall rules are in place (or could not be), so the sockets may open.
-    rules_ready = Signal()
+    update_check = Signal(str, object)
     permission = Signal(str, str, str, bool)
 
 
@@ -588,7 +587,7 @@ class WindowsApplication(QWidget):
         self.identify_screens = IdentifyScreens(self)
         self.bridge.shook_home.connect(self._on_shake)
         self.bridge.update.connect(self._on_update)
-        self.bridge.rules_ready.connect(self._listen)
+        self.bridge.update_check.connect(self._on_update_check)
         self.bridge.permission.connect(self._on_permission)
         self._update = None
         self._effects_failed = False
@@ -611,7 +610,6 @@ class WindowsApplication(QWidget):
         self._firewall_tone: Optional[str] = None
         self._firewall_busy = False
         self._firewall_again = False
-        self._firewall_auto_repaired = False
         self._host = default_config().host
         self._last_seen_state: Optional[ServerState] = None
         self._receiver_port: Optional[int] = None
@@ -742,6 +740,7 @@ class WindowsApplication(QWidget):
         self.update_checker = updates.Checker(
             VERSION, lambda: self._config is None or self._config.check_updates, self.bridge.update.emit,
             logger=LOGGER, portable=portable_runtime.enabled(),
+            on_check=self.bridge.update_check.emit,
         )
         self._paired = False
         try:
@@ -840,6 +839,11 @@ class WindowsApplication(QWidget):
         self.update_notice = widgets.Module("", heading=True)
         self.update_notice_text = self.update_notice.eyebrow
         actions = QHBoxLayout()
+        self.update_action = QPushButton(tr("Get update"))
+        self.update_action.setProperty("vernier", "primary")
+        self.update_action.clicked.connect(
+            lambda: self.open_update() if portal.sandboxed() else self.download_update())
+        actions.addWidget(self.update_action)
         self.update_notes = QPushButton(tr("What's new"))
         self.update_notes.clicked.connect(self.open_update)
         actions.addWidget(self.update_notes)
@@ -956,6 +960,7 @@ class WindowsApplication(QWidget):
             on_repair=self._re_pair,
             on_pair_phone=self._pair_phone,
             on_pair_nearby=self._start_nearby,
+            on_pin=self._set_peer_pin,
         )
         layout.addWidget(self.machines)
         layout.addWidget(self._name_module(current))
@@ -1126,21 +1131,30 @@ class WindowsApplication(QWidget):
 
     def _updates_module(self, current: Config) -> QWidget:
         module = widgets.Module(tr("Updates"))
-        self.updates_switch = widgets.Switch(tr("Check for updates"))
+        self.updates_switch = widgets.Switch(tr("Automatically check for updates"))
         self.updates_switch.setFont(theme.font(theme.TYPE["body"]))
         self.updates_switch.setChecked(current.check_updates)
         self.updates_switch.toggled.connect(self._set_check_updates)
         module.body.addWidget(self.updates_switch)
         module.body.addWidget(widgets.label(
-            tr("Asks GitHub once a day whether there is a newer Beamer. Nothing is sent but the request itself."),
+            tr("Checks GitHub at startup and once a day. Updates are downloaded and installed by you."),
             "note",
             wrap=True,
         ))
+        self.check_updates_button = QPushButton(tr("Check for updates"))
+        self.check_updates_button.clicked.connect(self.check_for_updates)
+        module.body.addWidget(self.check_updates_button)
+        self.update_status = widgets.label("", "note", wrap=True)
+        module.body.addWidget(self.update_status)
         self.update_button = QPushButton(tr("Download"))
         self.update_button.setProperty("vernier", "primary")
         self.update_button.clicked.connect(self.download_update)
         self.update_button.setVisible(False)
         module.body.addWidget(self.update_button)
+        self.update_page_notes = QPushButton(tr("What's new"))
+        self.update_page_notes.clicked.connect(self.open_update)
+        self.update_page_notes.setVisible(False)
+        module.body.addWidget(self.update_page_notes)
         return module
 
     def _set_check_updates(self, enabled: bool) -> None:
@@ -1153,18 +1167,43 @@ class WindowsApplication(QWidget):
         else:
             self._on_update(None)
 
-    def _on_update(self, found) -> None:
-        """(version, url) for a newer release, or None; on the GUI thread."""
-        if self._config is None or not self._config.check_updates:
+    def check_for_updates(self) -> None:
+        self._on_update_check("checking", None)
+        self.update_checker.check_now(manual=True)
+
+    def _on_update_check(self, state, found) -> None:
+        self.check_updates_button.setEnabled(state != "checking")
+        text = {"checking": tr("Checking for updates…"),
+                "current": tr("Beamer is up to date."),
+                "available": tr("Update available."),
+                "failed": tr("Could not check for updates. Check your connection and try again.")}[state]
+        self.update_status.setText(text)
+        if state in ("available", "current"):
+            self._on_update(found, manual=True)
+            if state == "current":
+                self.update_status.setText(text)
+
+    def _on_update(self, found, manual=False) -> None:
+        """A core Release or None; on the GUI thread."""
+        if self._config is None or (not manual and not self._config.check_updates):
             found = None
+        self._manual_update = manual
         self._update = found
+        self.update_status.setText(tr("Beamer {version} is available.").format(version=found[0]) if found else "")
+        if found and portal.sandboxed():
+            self.update_status.setText(self.update_status.text() + " " + tr(
+                "Update through your software store, or download the Flatpak from the release page and open it."))
+        elif found and portable_runtime.enabled() and not self.update_checker.download_url:
+            self.update_status.setText(self.update_status.text() + " " + tr(
+                "No portable download is available for this release. See What's new."))
+        self.update_page_notes.setVisible(found is not None)
         self.update_button.setText(tr("Download Beamer {version}").format(version=found[0]) if found else tr("Download"))
         if portable_runtime.enabled() and found:
             self.update_button.setText(tr("Download portable zip"))
-        motion.set_shown(self.update_button, found is not None and not portal.sandboxed()
-                         and (not portable_runtime.enabled() or bool(self.update_checker.download_url)))
-        self.header_action.setText(tr("Beamer {version} is available…").format(version=found[0]) if found else tr("Beamer {version}").format(version=VERSION))
-        self.header_action.setEnabled(found is not None and not portal.sandboxed())
+        can_download = found is not None and not portal.sandboxed() and (
+            not portable_runtime.enabled() or bool(self.update_checker.download_url))
+        motion.set_shown(self.update_button, can_download)
+        self.update_action.setVisible(found is not None and (portal.sandboxed() or can_download))
         self._refresh_update_notice()
 
     def _refresh_update_notice(self) -> None:
@@ -1173,13 +1212,20 @@ class WindowsApplication(QWidget):
         except (ConfigError, OSError):
             LOGGER.exception("Update notice settings could not be read")
             self.update_notice.hide()
+            self.header_action.setText(tr("Beamer {version}").format(version=VERSION))
+            self.header_action.setEnabled(False)
             return
         found = updates.visible_notice(self._update, self._config is not None and self._config.check_updates,
-                                       settings.get("dismissed_update_version", ""))
+                                       settings.get("dismissed_update_version", ""),
+                                       requested=getattr(self, "_manual_update", False))
+        self.header_action.setText(tr("Beamer {version} is available…").format(version=found[0]) if found else tr("Beamer {version}").format(version=VERSION))
+        self.header_action.setEnabled(found is not None and not portal.sandboxed())
         if found:
             text = tr("Beamer {version} is available.").format(version=found[0])
             if portal.sandboxed():
-                text += " " + tr("Update through your software store.")
+                text += " " + tr("Update through your software store, or download the Flatpak from the release page and open it.")
+            elif portable_runtime.enabled() and not self.update_checker.download_url:
+                text += " " + tr("No portable download is available for this release. See What's new.")
             self.update_notice_text.setText(text)
         self.update_notice.setVisible(bool(found))
 
@@ -1194,6 +1240,7 @@ class WindowsApplication(QWidget):
         except (ConfigError, OSError):
             LOGGER.exception("Update dismissal could not be saved")
             return
+        self._manual_update = False
         self._refresh_update_notice()
 
     def open_update(self) -> None:
@@ -1201,6 +1248,8 @@ class WindowsApplication(QWidget):
             QDesktopServices.openUrl(QUrl(self._update[1]))
 
     def download_update(self) -> None:
+        if portal.sandboxed():
+            return
         if portable_runtime.enabled():
             if self._update and self.update_checker.download_url:
                 QDesktopServices.openUrl(QUrl(self.update_checker.download_url))
@@ -1295,6 +1344,10 @@ class WindowsApplication(QWidget):
             tr("On Wayland Beamer cannot see a full-screen app, or a mouse button held before the pointer reaches an "
             "edge, so the edges are never held for one and a drag can cross."), "note", wrap=True)
         module.body.addWidget(self.wayland_crossing_note)
+        if sys.platform == "win32":
+            module.body.addWidget(widgets.label(
+                tr("Beamer controls normal windows; use administrator windows and Windows permission prompts locally."),
+                "note", wrap=True))
         for widget in (self.hold_switch, own_note, hold_note):
             widget.setVisible(not platform_parts.WAYLAND)
         # Wayland gives an app no way to hide the pointer.
@@ -2103,11 +2156,11 @@ class WindowsApplication(QWidget):
         if exe and not account_known:
             hint = tr("Windows could not identify the signed-in account, so start at sign-in is unavailable.")
         elif exe and not can_start:
-            hint = tr("Start at sign-in needs the same administrator account that runs Beamer.")
+            hint = tr("Start at sign-in needs Beamer to run as the signed-in account.")
         elif enabled:
-            hint = tr("Starts elevated at sign-in without a UAC prompt, so Beamer can send input to administrator apps.")
+            hint = tr("Starts in the tray when you sign in, without an administrator prompt.")
         elif exe:
-            hint = tr("When enabled, a logon task starts Beamer elevated without a UAC prompt, so it can send input to administrator apps.")
+            hint = tr("When enabled, Beamer starts in the tray with your normal permissions.")
         else:
             hint = tr("Only the installed app can start at sign-in.")
         self.logon_hint = widgets.label(hint, "note", wrap=True)
@@ -3719,7 +3772,7 @@ class WindowsApplication(QWidget):
         self.length_choice = _DesignChoiceSlider(
             "length", 25, 250, 5, 100, (0.5, 1.0, 2.0), effects.LENGTHS)
         self.size_choice = _DesignChoiceSlider(
-            "size", 20, 80, 1, 1000, (0.03, 0.045, 0.06), effects.SIZES)
+            "size", 20, 250, 1, 1000, (0.03, 0.045, 0.06), effects.SIZES)
         self.frame_rate_choice = widgets.Choice(
             tuple((value, tr(name)) for value, name, _divisor in effects.FRAME_RATES),
             3, current.frame_rate, on_change=self._apply_look)
@@ -4224,6 +4277,10 @@ class WindowsApplication(QWidget):
         """That machine may drive this PC or not. The listener stays up either way, since arrangements and
         settings still travel on its link; off ends its ownership and tells it (section 4)."""
         if self._edit_peer(token, allow_drive=bool(enabled)):
+            self._after_peers_edit()
+
+    def _set_peer_pin(self, token: str, enabled: bool) -> None:
+        if self._edit_peer(token, host_pinned=bool(enabled)):
             self._after_peers_edit()
 
     def _set_peer_in_use(self, token: str, enabled: bool) -> None:
@@ -4808,33 +4865,7 @@ class WindowsApplication(QWidget):
     def _firewall_action(self) -> None:
         if portable_runtime.enabled():
             return
-        # Only the built exe changes the firewall, by the button or on its own. From source the
-        # executable is python.exe, and repair() replaces Beamer's rules by name, so a test run on
-        # the PC took the installed Beamer's rules with it and cut the Mac's link (29-09-2026).
-        if not getattr(sys, "frozen", False):
-            LOGGER.info("Running from source; the firewall is left as it is")
-            return
-        advice = self._firewall_advice
-        if advice is None or advice.action is None:
-            return
-        if advice.action == "repair":
-            profiles = advice.rule_profiles
-
-            def job(exe, port):
-                firewall_win.repair(exe, port, profiles)
-                return firewall_win.status(exe, port)
-
-        elif advice.action == "trust":
-            indexes = [index for index, _ in (self._firewall_status.public_interfaces if self._firewall_status else ())]
-
-            def job(exe, port):
-                firewall_win.trust_network(indexes)
-                return firewall_win.status(exe, port)
-
-        else:
-            self._check_firewall()
-            return
-        self._run_firewall(job, tr("Fixing…"))
+        self._check_firewall()
 
     def _run_firewall(self, job, working: str) -> None:
         """One PowerShell at a time, off the GUI thread. A request arriving mid-run is folded
@@ -4871,13 +4902,13 @@ class WindowsApplication(QWidget):
         self.firewall_note.setText(advice.sentence)
         if status.error:
             tone = "note-fault"
-        elif advice.action == "check":
+        elif (not status.blocked and status.allowed and status.covered
+              and status.pairing_allowed and status.pairing_covered
+              and status.pairing_tcp_allowed and status.pairing_tcp_covered):
             tone = "note"
         else:
             tone = "note-amber"
-        # Remembered for the sidebar dot: "check" is the healthy end-state (its button just
-        # offers a manual re-check), so `advice.action is not None` alone would mark Firewall
-        # as needing attention even when everything is fine.
+        # Every action now rechecks; the sidebar reflects rule coverage, not button wording.
         self._firewall_tone = tone
         widgets.set_role(self.firewall_note, tone)
         self.firewall_button.setText(advice.button)
@@ -4886,19 +4917,6 @@ class WindowsApplication(QWidget):
             self._firewall_again = False
             self._check_firewall()
             return
-        # A missing rule with the rights to write one is not a question for the
-        # user: the release installer cannot add it, so a fresh install would
-        # otherwise sit unreachable until someone found this page. A block rule
-        # or a public network is still theirs to decide.
-        if (
-            advice.action == "repair"
-            and status.elevated
-            and firewall_win.missing_rule(status)
-            and not self._firewall_auto_repaired
-        ):
-            self._firewall_auto_repaired = True
-            LOGGER.info("No firewall rule for this executable; adding one")
-            self._firewall_action()
 
     # -- theming, tray, lifecycle ------------------------------------------------------------
 
@@ -5099,27 +5117,7 @@ class WindowsApplication(QWidget):
 
     def start(self) -> None:
         self.update_checker.start()
-        if not portable_runtime.enabled() and getattr(sys, "frozen", False) and firewall_win.is_elevated():
-            # Beamer's own rules before any socket opens: a listener Windows has no rule for makes
-            # it ask, and a click on Allow there writes rules for every network, public ones too,
-            # where Beamer's are for private networks only. Not from source: see _firewall_action.
-            threading.Thread(target=self._rules_then_listen, name="Beamer-firewall-first", daemon=True).start()
-        else:
-            self._listen()
-
-    def _rules_then_listen(self) -> None:
-        if portable_runtime.enabled():
-            self.bridge.rules_ready.emit()
-            return
-        try:
-            exe, port = self._firewall_target()
-            status = firewall_win.status(exe, port)
-            if firewall_win.missing_rule(status):
-                LOGGER.info("Adding this PC's firewall rules before listening")
-                firewall_win.repair(exe, port, ("Private",))
-        except Exception:
-            LOGGER.exception("The firewall rules could not be added before listening")
-        self.bridge.rules_ready.emit()
+        self._listen()
 
     def _listen(self) -> None:
         if self._closing:

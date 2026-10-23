@@ -119,6 +119,8 @@ class Hand:
         self.lock = threading.RLock()
         self.sent = []
         self.moved = []
+        self._input_sent = {}
+        self._input_acked = {}
         self._closed = threading.Event()
         self._keep_alive_thread = threading.Thread(target=self._keep_alive, name="hand-pings", daemon=True)
         self._keep_alive_thread.start()
@@ -149,6 +151,8 @@ class Hand:
         with self.lock:
             link = self.links.pop(text(other.own), None)
             if link is not None:
+                self._input_sent.pop(link, None)
+                self._input_acked.pop(link, None)
                 link.close()
             self.carry_out(self.owner.link_down(text(other.own)))
 
@@ -169,7 +173,7 @@ class Hand:
                     self.sent.append((action.peer, dict(message["data"])))
                 try:
                     if message["type"] in protocol.INPUT_TYPES:
-                        link.input(message)
+                        self._input_sent[link] = link.input(message)
                     else:
                         link.send(message)
                 except OSError:
@@ -208,7 +212,9 @@ class Hand:
                 while not link.inbox.empty():
                     message = link.inbox.get_nowait()
                     kind, data = message.get("type"), message.get("data") or {}
-                    if kind == protocol.MSG_SWITCH:
+                    if kind == protocol.MSG_ACK:
+                        self._input_acked[link] = max(self._input_acked.get(link, 0), data["seq"])
+                    elif kind == protocol.MSG_SWITCH:
                         self.carry_out(self.owner.switch(peer, data))
                     elif kind == protocol.MSG_ACCEPT:
                         self.carry_out(self.owner.accept(peer, data))
@@ -227,6 +233,13 @@ class Hand:
             time.sleep(0.003)
         self.pump()
         return bool(predicate())
+
+    def input_settled(self):
+        # A zone's SWITCH precedes its input ACK on the same link. This fences the zone decision,
+        # not receiver callbacks, and includes input generated while pumping a hand-over.
+        with self.lock:
+            return self.owner._wait is None and all(
+                self._input_acked.get(link, 0) >= seq for link, seq in self._input_sent.items())
 
     def go(self, peer, edge=None, offset=None, display=None, side=None):
         with self.lock:
@@ -426,17 +439,17 @@ class Net:
             for _ in range(PUSHES):
                 holder.hand.move(*delta)
                 here.screen.cursor = point
-            # Every move is acked or acted on before the result is read.
-            holder.hand.until(lambda: False, timeout=0.15)
-        holder.hand.until(lambda: getattr(holder.hand.owner, "_wait", None) is None, timeout=0.5)
-        self.settle(0.5)
+        self.test.assertTrue(holder.hand.until(holder.hand.input_settled),
+                             "input ACK frontier or ownership did not complete after push")
+        self.test.assertTrue(self.settle(), "the desks did not settle after push")
         return self.at(holder)
 
     def shortcut(self, holder, other=None):
         """`holder`'s shortcut, menu or Send button: to `other`, or home with None."""
         holder.hand.go(None if other is None or other is holder else other.id)
-        holder.hand.until(lambda: getattr(holder.hand.owner, "_wait", None) is None, timeout=0.5)
-        self.settle(0.5)
+        self.test.assertTrue(holder.hand.until(holder.hand.input_settled),
+                             "input ACK frontier or ownership did not complete after shortcut")
+        self.test.assertTrue(self.settle(), "the desks did not settle after shortcut")
         return self.at(holder)
 
     def driven_by(self, desk):

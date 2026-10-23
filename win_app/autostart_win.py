@@ -1,12 +1,8 @@
 """Start at logon, owned by the app: each interactive account has its own scheduled task, so there
 is no config field to disagree with it.
 
-A scheduled task rather than a Run key or a Startup shortcut: Beamer.exe is manifested
-requireAdministrator, and Explorer starts such an exe from either of those with a UAC prompt on
-every logon. A task with the highest run level starts it elevated and silently for an
-administrator account. Windows cannot do that for a standard account without storing another
-user's credentials, so the switch is unavailable when a different administrator approved this
-launch.
+The task uses the signed-in user's ordinary token, including standard accounts. The installer
+lowers old elevated tasks without changing whether the user enabled them.
 
 Registered from XML, not `schtasks /create /sc onlogon`: that form cannot set a working directory
 and gives every task a 72-hour execution limit, which would stop Beamer three days after logon.
@@ -92,7 +88,7 @@ def task_name(user: str) -> str:
 
 
 def can_run_for_current_user() -> bool:
-    """The requireAdministrator app can start silently only for the account that elevated it."""
+    """Do not configure another user's session after an over-the-shoulder administrator launch."""
     return current_user().casefold() == _process_user().casefold()
 
 
@@ -114,7 +110,7 @@ def task_xml(exe: str, user: str, arguments: str = "--hidden") -> str:
     <Principal id="Author">
       <UserId>{escape(user)}</UserId>
       <LogonType>InteractiveToken</LogonType>
-      <RunLevel>HighestAvailable</RunLevel>
+      <RunLevel>LeastPrivilege</RunLevel>
     </Principal>
   </Principals>
   <Settings>
@@ -170,6 +166,8 @@ def _replacement_ready(root, exe: str, arguments: str) -> bool:
                 for trigger in root.findall("t:Triggers/t:LogonTrigger", ns))
         and ntpath.normcase(command) == ntpath.normcase(exe)
         and root.findtext("t:Actions/t:Exec/t:Arguments", "", ns) == arguments
+        and root.findtext("t:Principals/t:Principal/t:RunLevel", "", ns) == "LeastPrivilege"
+        and root.findtext("t:Principals/t:Principal/t:LogonType", "", ns) == "InteractiveToken"
     )
 
 
@@ -231,7 +229,7 @@ def set_enabled(enabled: bool, exe: str, user: Optional[str] = None, run: Runner
         result = run(["schtasks", "/delete", "/tn", name, "/f"])
     else:
         if not can_run_for_current_user():
-            raise OSError("Beamer can start elevated at sign-in only for an administrator account")
+            raise OSError("Start at sign-in needs Beamer to run as the signed-in account")
         fd, path = tempfile.mkstemp(suffix=".xml")
         try:
             with os.fdopen(fd, "w", encoding="utf-16") as handle:

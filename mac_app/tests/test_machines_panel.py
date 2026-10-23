@@ -183,6 +183,26 @@ class Base(unittest.TestCase):
 
 
 class ListTests(Base):
+    def test_address_pin_can_be_released_and_restored_per_machine(self):
+        self.pair(FIRST, SECOND_TOKEN, "Studio", host_pinned=True)
+        self.window.direction_handler = lambda token, **change: self.store.set_peer(token, **change)
+        self.panel.refresh()
+
+        def pin_control():
+            stack = [self.row_with_control(SECOND_TOKEN, "host_pinned")]
+            while stack:
+                view = stack.pop()
+                if getattr(view, "focus_id", None) == (SECOND_TOKEN, "host_pinned"):
+                    return view
+                stack.extend(view.subviews())
+
+        pin_control().press()
+        self.assertIs(self.store.current()["peers"][1]["host_pinned"], False)
+        self.store.save(settings_store.config_to_raw(self.store.load()))
+        self.panel.refresh()
+        pin_control().press()
+        self.assertIs(self.store.current()["peers"][1]["host_pinned"], True)
+
     def test_renaming_a_machine_saves_on_return_and_escape_cancels(self):
         self.pair(FIRST, SECOND_TOKEN, "Studio")
         self.panel.refresh()
@@ -313,13 +333,14 @@ class DirectionAndRemovalTests(Base):
         self.panel.refresh()
         row = self.rows()[0]
         self.assertEqual(len([view for view in self.descend(row)
-                              if view.accessibilityRole() == AppKit.NSAccessibilityCheckBoxRole]), 1)
+                              if view.accessibilityRole() == AppKit.NSAccessibilityCheckBoxRole]), 2)
         self.panel._toggle_directions(PAIRED_TOKEN)
         row = self.rows()[0]
         switches = [view for view in self.descend(row) if view.accessibilityRole() == AppKit.NSAccessibilityCheckBoxRole]
-        self.assertEqual(len(switches), 3)
-        switches[1].callback()
-        switches[2].callback()
+        self.assertEqual(len(switches), 4)
+        for view in switches:
+            if getattr(view, "focus_id", (None, None))[1] in ("drives", "driven"):
+                view.callback()
         token = PAIRED_TOKEN
         self.assertEqual([call[0] for call in self.directions], [token, token])
         self.assertEqual({tuple(call[1]) for call in self.directions}, {("send",), ("allow_drive",)})

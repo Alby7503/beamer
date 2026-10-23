@@ -331,8 +331,29 @@ class SettingsLayoutAcceptanceTests(unittest.TestCase):
                 with self.subTest(dark=dark, width=width):
                     for family in control.glow_style_select.rows:
                         self.assertEqual(family.columns, 3 if column >= 600 else 2 if column >= 400 else 1)
-                    self.assertEqual(control.length_row.field_owner.stacked, column < 560)
+                    if column < 560:
+                        self.assertTrue(control.length_row.field_owner.stacked)
+                    elif column >= 576:
+                        self.assertFalse(control.length_row.field_owner.stacked)
                     self.assertEqual(control.sidebar.rows['design'][3].view.isHidden(), width < 640)
+
+    def test_design_rows_stay_stacked_through_the_sidebar_width_change(self):
+        control = offscreen_control_window()
+        control._select_page("design")
+        settle(control.window)
+        for width, stacked in ((760, True), (780, True), (800, True), (820, False),
+                               (800, True), (780, True), (760, True)):
+            control.window.setFrame_display_(((100000, 100000), (width, 900)), False)
+            settle(control.window)
+            self.assertAlmostEqual(control.window.frame().size.width, width, delta=.5)
+            self.assertFalse(control.window.isVisible())
+            for name, row in (("Length", control.length_row), ("Size", control.size_row)):
+                owner = row.field_owner
+                self.assertEqual(owner.stacked, stacked, f"{name} at window width {width}")
+                frame = owner.control.frame()
+                self.assertGreater(frame.size.width, 0)
+                self.assertGreaterEqual(frame.origin.x, -.5)
+                self.assertLessEqual(frame.origin.x + frame.size.width, row.bounds().size.width + 1)
 
     def test_long_buttons_grow_in_height_and_machine_names_remain_available(self):
         button = widgets.Button('A longer action whose full label needs several lines in this column', None, None)

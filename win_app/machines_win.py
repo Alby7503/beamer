@@ -334,7 +334,8 @@ class PeerRow(QWidget):
 
     def __init__(self, token: str, on_send: Callable, on_allow: Callable, on_in_use: Callable,
                  on_left_out: Callable, on_remove: Callable, on_rename: Optional[Callable] = None,
-                 on_cycle: Optional[Callable] = None, on_repair: Optional[Callable] = None) -> None:
+                 on_cycle: Optional[Callable] = None, on_repair: Optional[Callable] = None,
+                 on_pin: Optional[Callable] = None) -> None:
         super().__init__()
         self.setProperty("vernier", "plain")
         self.token = token
@@ -381,6 +382,10 @@ class PeerRow(QWidget):
         column.addWidget(self.rename_note)
         self.where = widgets.label("", "note-quiet", wrap=True)
         column.addWidget(self.where)
+        self.pin_address = widgets.Switch(tr("Pin address"))
+        self.pin_address.setToolTip(tr("Keeps this address through reconnects and re-pairing. Turn off to follow address changes automatically."))
+        self.pin_address.toggled.connect(lambda on: (on_pin or (lambda *_: None))(self.token, on))
+        column.addWidget(self.pin_address)
         self.detail = widgets.label("", "note", wrap=True)
         column.addWidget(self.detail)
         self.repair_button = _button(tr("Re-pair"), "small")
@@ -509,6 +514,12 @@ class PeerRow(QWidget):
         self._same_on = same_on
         self._left_out = entry.get("left_out") is True
         dormant = peerlist.dormant_reason(entry) is not None
+        self.pin_address.setVisible(not self._phone and not asking)
+        self.pin_address.setEnabled(bool(entry.get("host")))
+        self.pin_address.setAccessibleName(tr("Pin address for {name}").format(name=label))
+        self.pin_address.blockSignals(True)
+        self.pin_address.setChecked(bool(entry.get("host")) and entry.get("host_pinned") is not False)
+        self.pin_address.blockSignals(False)
         self.shortcut_cycle.setVisible(not self._phone and cycle_mode == "ticked")
         self.shortcut_cycle.setEnabled(entry.get("in_use", True) is True and not dormant)
         self.shortcut_cycle.blockSignals(True)
@@ -549,11 +560,11 @@ class MachinesModule(widgets.Module):
                  on_remove: Callable, on_pair: Callable, on_rename: Optional[Callable] = None,
                  on_cycle: Optional[Callable] = None, on_repair: Optional[Callable] = None,
                  on_pair_phone: Optional[Callable] = None,
-                 on_pair_nearby: Optional[Callable] = None) -> None:
+                 on_pair_nearby: Optional[Callable] = None, on_pin: Optional[Callable] = None) -> None:
         super().__init__(tr("Machines"))
         self._callbacks = (on_send, on_allow, on_in_use, on_left_out, on_remove,
                            on_rename or (lambda *_: None), on_cycle,
-                           on_repair or (lambda *_: None))
+                           on_repair or (lambda *_: None), on_pin)
         self.rows: dict = {}
         self.rows_layout = QVBoxLayout()
         self.rows_layout.setContentsMargins(0, 0, 0, 0)

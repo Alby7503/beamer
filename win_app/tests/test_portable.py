@@ -2,6 +2,7 @@
 
 import json
 import os
+import subprocess
 from pathlib import Path
 import sys
 import tempfile
@@ -208,13 +209,12 @@ class PortableTests(unittest.TestCase):
         legacy.assert_not_called()
         run.assert_not_called()
 
-    def test_gameinput_service_is_not_queried_or_restarted_in_portable_mode(self):
+    def test_gameinput_service_is_not_restarted_in_portable_mode(self):
         after = mock.Mock()
         with mock.patch.object(input_injector, 'foreground_class') as foreground, \
-                mock.patch.object(input_injector.windows_tools, 'run') as run, \
+                mock.patch.object(subprocess, 'run') as run, \
                 mock.patch.object(input_injector.threading, 'Thread') as thread:
             self.assertFalse(input_injector.release_gameinput_foreground(after=after))
-        foreground.assert_not_called()
         run.assert_not_called()
         thread.assert_not_called()
         after.assert_not_called()
@@ -222,7 +222,6 @@ class PortableTests(unittest.TestCase):
     def test_manual_automatic_and_startup_firewall_paths_never_mutate_host(self):
         owner = SimpleNamespace(
             update_checker=SimpleNamespace(start=mock.Mock()), _listen=mock.Mock(),
-            bridge=SimpleNamespace(rules_ready=SimpleNamespace(emit=mock.Mock())),
             firewall_note=mock.Mock(), firewall_button=mock.Mock(), _run_firewall=mock.Mock(),
             _firewall_advice=SimpleNamespace(action='repair', rule_profiles=('Private',)),
         )
@@ -233,12 +232,10 @@ class PortableTests(unittest.TestCase):
                 mock.patch.object(kvm.firewall_win, 'status') as status, \
                 mock.patch.object(kvm.threading, 'Thread') as thread:
             kvm.WindowsApplication.start(owner)
-            kvm.WindowsApplication._rules_then_listen(owner)
             kvm.WindowsApplication._firewall_action(owner)
             kvm.WindowsApplication._on_firewall(owner, SimpleNamespace(elevated=True))
             kvm.WindowsApplication._check_firewall(owner)
         owner._listen.assert_called_once()
-        owner.bridge.rules_ready.emit.assert_called_once()
         owner._run_firewall.assert_not_called()
         owner.firewall_button.hide.assert_called_once()
         for operation in (repair, trust, status, thread):
@@ -368,6 +365,10 @@ class PortableTests(unittest.TestCase):
         owner.server.start.assert_not_called()
         owner.sender.start.assert_not_called()
         owner.hooks.start.assert_not_called()
+
+    @unittest.skipUnless(sys.platform == 'win32', 'pointer restoration is a Windows desktop API')
+    def test_blocked_controller_does_not_restore_pointer(self):
+        owner = SimpleNamespace(_input_controller_blocked=True)
         with mock.patch.object(portable_runtime, 'enabled', return_value=False), \
                 mock.patch.object(kvm.desktop_win, 'restore_pointer') as restore, \
                 mock.patch.object(kvm.idle_pointer, 'IdlePointer') as pointer:
@@ -428,12 +429,27 @@ class PortableTests(unittest.TestCase):
                                   fetcher=lambda: json.dumps(payload).encode(), portable=True)
         checker.check_once()
         owner = SimpleNamespace(_update=checker.latest, update_checker=checker)
-        with mock.patch.object(kvm.QDesktopServices, 'openUrl') as opened:
+        with mock.patch.object(kvm.portal, 'sandboxed', return_value=False), \
+                mock.patch.object(kvm.QDesktopServices, 'openUrl') as opened:
             kvm.WindowsApplication.download_update(owner)
             self.assertEqual(opened.call_args.args[0].toString(), DOWNLOAD)
             kvm.WindowsApplication.open_update(owner)
             self.assertEqual(opened.call_args.args[0].toString(), PAGE)
         self.assertEqual(opened.call_count, 2)
+
+    def test_flatpak_never_opens_portable_zip_directly(self):
+        payload = {'tag_name': 'v' + VERSION, 'html_url': PAGE,
+                   'assets': [{'name': 'Beamer-Portable-' + VERSION + '-windows-x64.zip',
+                               'browser_download_url': DOWNLOAD}]}
+        checker = updates.Checker('1.5.10', lambda: True, lambda result: None,
+                                  fetcher=lambda: json.dumps(payload).encode(), portable=True)
+        checker.check_once()
+        self.assertEqual(checker.download_url, DOWNLOAD)
+        owner = SimpleNamespace(_update=checker.latest, update_checker=checker)
+        with mock.patch.object(kvm.portal, 'sandboxed', return_value=True), \
+                mock.patch.object(kvm.QDesktopServices, 'openUrl') as opened:
+            kvm.WindowsApplication.download_update(owner)
+        opened.assert_not_called()
 
     def test_missing_portable_asset_does_not_open_installer_or_release_page(self):
         owner = SimpleNamespace(_update=(VERSION, PAGE),

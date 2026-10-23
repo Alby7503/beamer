@@ -1619,6 +1619,10 @@ msgid "Idle"
 msgstr "Inattivo"
 
 #: mac_app/kvm_bridge_app.py win_app/kvm_bridge_win.py
+msgid "Get update"
+msgstr "Scarica l'aggiornamento"
+
+#: mac_app/kvm_bridge_app.py win_app/kvm_bridge_win.py
 msgid "What's new"
 msgstr "Novità"
 
@@ -1661,6 +1665,10 @@ msgstr "Mostra nel Dock"
 #: mac_app/kvm_bridge_app.py
 msgid "Show in menu bar"
 msgstr "Mostra nella barra dei menu"
+
+#: mac_app/kvm_bridge_app.py win_app/kvm_bridge_win.py
+msgid "Automatically check for updates"
+msgstr "Controlla automaticamente gli aggiornamenti"
 
 #: mac_app/kvm_bridge_app.py win_app/kvm_bridge_win.py
 msgid "Check for updates"
@@ -1975,9 +1983,29 @@ msgstr "Uguale su tutti i computer"
 msgid "At login"
 msgstr "Al login"
 
+#: mac_app/kvm_bridge_app.py
+msgid "Dock and menu bar"
+msgstr "Dock e barra dei menu"
+
 #: mac_app/kvm_bridge_app.py win_app/kvm_bridge_win.py
 msgid "Updates"
 msgstr "Aggiornamenti"
+
+#: mac_app/kvm_bridge_app.py win_app/kvm_bridge_win.py
+msgid "Checking for updates…"
+msgstr "Ricerca aggiornamenti…"
+
+#: mac_app/kvm_bridge_app.py win_app/kvm_bridge_win.py
+msgid "Beamer is up to date."
+msgstr "Beamer è aggiornato."
+
+#: mac_app/kvm_bridge_app.py win_app/kvm_bridge_win.py
+msgid "Update available."
+msgstr "Aggiornamento disponibile."
+
+#: mac_app/kvm_bridge_app.py win_app/kvm_bridge_win.py
+msgid "Could not check for updates. Check your connection and try again."
+msgstr "Impossibile controllare gli aggiornamenti. Controlla la connessione e riprova."
 
 #: mac_app/kvm_bridge_app.py mac_app/widgets.py win_app/kvm_bridge_win.py
 msgid "Match design with"
@@ -2259,12 +2287,12 @@ msgid "Ways: set on the Crossing page · {state}"
 msgstr "Vie: si impostano nella pagina Passaggio · {state}"
 
 #: mac_app/kvm_bridge_app.py
-msgid "With the Dock icon off, Beamer stays in the menu bar and appears in the Dock while its window is open. The Dock and the menu bar are never both off: the one still showing cannot be switched off."
-msgstr "Con l'icona del Dock disattivata, Beamer resta nella barra dei menu e appare nel Dock mentre la sua finestra è aperta. Il Dock e la barra dei menu non sono mai disattivati entrambi: quello ancora visibile non può essere disattivato."
+msgid "For menu-bar-only use, turn off Show in Dock and close this window. Beamer stays in the menu bar. Its Dock icon appears while this window is open."
+msgstr "Per usare Beamer solo dalla barra dei menu, disattiva Mostra nel Dock e chiudi questa finestra. Beamer resta nella barra dei menu. L'icona nel Dock appare quando questa finestra è aperta."
 
 #: mac_app/kvm_bridge_app.py win_app/kvm_bridge_win.py
-msgid "Asks GitHub once a day whether there is a newer Beamer. Nothing is sent but the request itself."
-msgstr "Chiede a GitHub una volta al giorno se c'è una versione più recente di Beamer. Non viene inviato nulla oltre alla richiesta stessa."
+msgid "Checks GitHub at startup and once a day. Updates are downloaded and installed by you."
+msgstr "Controlla GitHub all'avvio e una volta al giorno. Scarichi e installi tu gli aggiornamenti."
 
 #: mac_app/kvm_bridge_app.py win_app/kvm_bridge_win.py
 msgid "System"
@@ -2532,13 +2560,13 @@ msgstr "Disattivato"
 
 #: mac_app/kvm_bridge_app.py win_app/kvm_bridge_win.py
 #, python-brace-format
-msgid "Download Beamer {version}"
-msgstr "Scarica Beamer {version}"
+msgid "Beamer {version} is available."
+msgstr "Beamer {version} è disponibile."
 
 #: mac_app/kvm_bridge_app.py win_app/kvm_bridge_win.py
 #, python-brace-format
-msgid "Beamer {version} is available."
-msgstr "Beamer {version} è disponibile."
+msgid "Download Beamer {version}"
+msgstr "Scarica Beamer {version}"
 
 #. {reason} is the system's reason for refusing the login item.
 #: mac_app/kvm_bridge_app.py
@@ -3483,6 +3511,14 @@ msgid "Re-pair"
 msgstr "Riabbina"
 
 #: mac_app/machines_panel.py win_app/machines_win.py
+msgid "Pin address"
+msgstr "Mantieni questo indirizzo"
+
+#: mac_app/machines_panel.py win_app/machines_win.py
+msgid "Keeps this address through reconnects and re-pairing. Turn off to follow address changes automatically."
+msgstr "Mantiene questo indirizzo dopo le riconnessioni e un nuovo abbinamento. Disattiva per seguire automaticamente i cambiamenti di indirizzo."
+
+#: mac_app/machines_panel.py win_app/machines_win.py
 msgid "Hide directions"
 msgstr "Nascondi direzioni"
 
@@ -4193,41 +4229,21 @@ msgstr "Pressione attuale {pressure} su {threshold} unità del puntatore sul bor
 msgid "No push. Current pressure is 0 of {threshold} pointer units."
 msgstr "Nessuna spinta. La pressione attuale è 0 su {threshold} unità del puntatore."
 
+#: win_app/firewall_win.py
+msgid "Windows treats this network as public; if you trust it, change its network profile to Private in Windows Settings."
+msgstr "Windows considera pubblica questa rete; se ti fidi, cambia il profilo di rete in Privato nelle Impostazioni di Windows."
+
+#: win_app/firewall_win.py
+msgid "Beamer's firewall rules need attention; run the Beamer installer again to repair them for private networks."
+msgstr "Le regole del firewall di Beamer vanno corrette; esegui di nuovo il programma di installazione di Beamer per ripararle sulle reti private."
+
 #: win_app/firewall_win.py win_app/linux_stand_ins.py
 msgid "Check again"
 msgstr "Controlla di nuovo"
 
 #: win_app/firewall_win.py
-msgid "Windows Firewall is blocking Beamer's input or pairing traffic. This can happen when Cancel was pressed on Windows' own \"allow this app\" prompt, and a block rule beats any allow rule, so reinstalling does not clear it. Fixing it removes the block and adds the right rules for private networks."
-msgstr "Windows Firewall sta bloccando il traffico di input o di abbinamento di Beamer. Può succedere se è stato premuto Annulla nella richiesta di Windows «Consenti l'accesso» per l'app: una regola di blocco prevale su qualsiasi regola di autorizzazione, quindi reinstallare non risolve il problema. La correzione rimuove il blocco e aggiunge le regole corrette per le reti private."
-
-#: win_app/firewall_win.py
-msgid "Fix the firewall"
-msgstr "Correggi il firewall"
-
-#: win_app/firewall_win.py
-#, python-brace-format
-msgid "Beamer could not read the Windows Firewall: {error}"
-msgstr "Beamer non è riuscito a leggere Windows Firewall: {error}"
-
-#: win_app/firewall_win.py
-msgid "Trust this network"
-msgstr "Considera attendibile questa rete"
-
-#: win_app/firewall_win.py
-#, python-brace-format
-msgid "{sentence} Beamer is not running as administrator, so it cannot make this change itself: quit Beamer and open it again from the Start menu."
-msgstr "{sentence} Beamer non è in esecuzione come amministratore, quindi non può fare questa modifica da solo: esci da Beamer e aprilo di nuovo dal menu Start."
-
-#: win_app/firewall_win.py
-#, python-brace-format
-msgid "Windows Firewall has no rule letting your other machines reach Beamer on port {port}, so they will say this PC is unreachable. This happens when the installer was run without administrator rights. Fixing it adds the rule for private networks."
-msgstr "Windows Firewall non ha una regola che consenta agli altri tuoi computer di raggiungere Beamer sulla porta {port}, quindi diranno che questo PC non è raggiungibile. Succede quando il programma di installazione è stato eseguito senza diritti di amministratore. La correzione aggiunge la regola per le reti private."
-
-#: win_app/firewall_win.py
-#, python-brace-format
-msgid "Windows treats {names} as a public network, so some of Beamer's firewall rules do not cover it and your other machines cannot get in. Trusting it marks the network as private, which lets them in without opening the port on every other network this PC joins."
-msgstr "Windows considera {names} una rete pubblica, quindi alcune regole del firewall di Beamer non la coprono e gli altri tuoi computer non possono accedere. Considerandola attendibile, la rete diventa privata: così possono accedere senza aprire la porta su tutte le altre reti a cui questo PC si collega."
+msgid "Windows Firewall has a block rule affecting Beamer's input or pairing traffic; ask your administrator to review Beamer's inbound block rules in Windows Firewall."
+msgstr "Una regola di blocco del Firewall di Windows riguarda il traffico di input o di abbinamento di Beamer; chiedi all'amministratore di controllare le regole di blocco in entrata di Beamer nel Firewall di Windows."
 
 #: win_app/firewall_win.py
 msgid "this private network"
@@ -4239,18 +4255,23 @@ msgstr "questa rete"
 
 #: win_app/firewall_win.py
 #, python-brace-format
-msgid "Beamer's firewall rule does not apply on this network (Windows calls it {names}). Fixing it rewrites the rule to cover it."
-msgstr "La regola del firewall di Beamer non vale su questa rete (Windows la chiama {names}). La correzione riscrive la regola per includerla."
-
-#: win_app/firewall_win.py
-#, python-brace-format
-msgid "Windows Firewall lets your other machines reach Beamer on port {port}, but there is no rule covering this network for {rules}, so {effects}. Fixing it replaces Beamer's inbound firewall rules."
-msgstr "Windows Firewall consente agli altri tuoi computer di raggiungere Beamer sulla porta {port}, ma nessuna regola copre questa rete per {rules}, quindi {effects}. La correzione sostituisce le regole in entrata del firewall di Beamer."
+msgid "Beamer could not read the Windows Firewall: {error}"
+msgstr "Beamer non è riuscito a leggere Windows Firewall: {error}"
 
 #: win_app/firewall_win.py
 #, python-brace-format
 msgid "Windows Firewall lets your other machines reach Beamer on port {port} on {where}, and lets a new machine discover this PC."
 msgstr "Windows Firewall consente agli altri tuoi computer di raggiungere Beamer sulla porta {port} su {where}, e consente a un nuovo computer di trovare questo PC."
+
+#: win_app/firewall_win.py
+#, python-brace-format
+msgid "This managed network needs Windows Firewall rules for Beamer; ask your administrator to allow its receiver on TCP {port} and pairing on UDP and TCP {pairing_port} for the Domain profile."
+msgstr "Questa rete gestita richiede regole del Firewall di Windows per Beamer; chiedi all'amministratore di consentire il ricevitore sulla porta TCP {port} e l'abbinamento su UDP e TCP {pairing_port} per il profilo Dominio."
+
+#: win_app/firewall_win.py
+#, python-brace-format
+msgid "Beamer uses custom port {port}; ask your administrator to allow that port for Beamer on trusted networks."
+msgstr "Beamer usa la porta personalizzata {port}; chiedi all'amministratore di consentirla per Beamer sulle reti attendibili."
 
 #: win_app/global_shortcut_portal.py
 msgid "Send input to another machine"
@@ -4259,6 +4280,10 @@ msgstr "Invia input a un altro computer"
 #: win_app/identify_overlay.py
 msgid "Beamer — Identify screens"
 msgstr "Beamer — Identifica gli schermi"
+
+#: win_app/input_injector.py
+msgid "Windows blocked Beamer's input; use administrator windows locally and click a normal window on this PC to continue."
+msgstr "Windows ha bloccato l'input di Beamer; usa localmente le finestre con privilegi di amministratore e fai clic su una finestra normale di questo PC per continuare."
 
 #: win_app/kvm_bridge_win.py
 msgid "Beamer's website"
@@ -4537,10 +4562,6 @@ msgid "Checking…"
 msgstr "Verifica…"
 
 #: win_app/kvm_bridge_win.py
-msgid "Fixing…"
-msgstr "Correzione…"
-
-#: win_app/kvm_bridge_win.py
 msgid "This PC drives machines"
 msgstr "Questo PC controlla gli altri computer"
 
@@ -4593,8 +4614,8 @@ msgid "Delay:"
 msgstr "Ritardo:"
 
 #: win_app/kvm_bridge_win.py
-msgid "Start at sign-in needs the same administrator account that runs Beamer."
-msgstr "L'avvio all'accesso richiede lo stesso account amministratore che esegue Beamer."
+msgid "Start at sign-in needs Beamer to run as the signed-in account."
+msgstr "Per avviarsi all'accesso, Beamer deve essere eseguito con l'account attualmente connesso."
 
 #: win_app/kvm_bridge_win.py
 msgid "Each chip is a side of this screen; click one to add or remove it. The side a machine touches crosses on its lit thirds; any other free side wraps round to it, arriving on its far side. A corner is a diagonal push, shown as a square on the map."
@@ -4680,12 +4701,16 @@ msgid "This desktop has no system tray, so Beamer's window is all there is: clos
 msgstr "Questo desktop non ha un'area di notifica, quindi la finestra di Beamer è tutto ciò che c'è: chiuderla chiude Beamer."
 
 #: win_app/kvm_bridge_win.py
-msgid "Update through your software store."
-msgstr "Aggiorna tramite il tuo gestore software."
+msgid "Update through your software store, or download the Flatpak from the release page and open it."
+msgstr "Aggiorna tramite il tuo negozio di software oppure scarica il file Flatpak dalla pagina della versione e aprilo."
 
 #: win_app/kvm_bridge_win.py
-msgid "Starts elevated at sign-in without a UAC prompt, so Beamer can send input to administrator apps."
-msgstr "Si avvia con privilegi elevati all'accesso senza richiesta UAC, così Beamer può inviare input alle app amministratore."
+msgid "Beamer controls normal windows; use administrator windows and Windows permission prompts locally."
+msgstr "Beamer controlla le finestre normali; gestisci localmente le finestre con privilegi di amministratore e le richieste di autorizzazione di Windows."
+
+#: win_app/kvm_bridge_win.py
+msgid "Starts in the tray when you sign in, without an administrator prompt."
+msgstr "All'accesso si avvia nell'area di notifica, senza richiesta di privilegi di amministratore."
 
 #: win_app/kvm_bridge_win.py
 msgid "Seam crossings need X11 on Linux."
@@ -4768,8 +4793,12 @@ msgstr ""
 "{link}"
 
 #: win_app/kvm_bridge_win.py
-msgid "When enabled, a logon task starts Beamer elevated without a UAC prompt, so it can send input to administrator apps."
-msgstr "Se attivo, un'attività all'accesso avvia Beamer con privilegi elevati senza richiesta UAC, così può inviare input alle app amministratore."
+msgid "No portable download is available for this release. See What's new."
+msgstr "Per questa versione non è disponibile un download portatile. Consulta Novità."
+
+#: win_app/kvm_bridge_win.py
+msgid "When enabled, Beamer starts in the tray with your normal permissions."
+msgstr "Se attivo, Beamer si avvia nell'area di notifica con i tuoi normali privilegi."
 
 #: win_app/kvm_bridge_win.py
 msgid "Only the installed app can start at sign-in."
@@ -4914,6 +4943,11 @@ msgstr "Cifre di abbinamento"
 #: win_app/machines_win.py
 msgid "Pairing…"
 msgstr "Abbinamento…"
+
+#: win_app/machines_win.py
+#, python-brace-format
+msgid "Pin address for {name}"
+msgstr "Mantieni questo indirizzo per {name}"
 
 #: win_app/machines_win.py
 #, python-brace-format

@@ -957,7 +957,8 @@ class FieldRow:
         self.arrange(640)
 
     def arrange(self, width):
-        stacked = self.caption is None or width < 528
+        # The sidebar expands at 800 pt, briefly narrowing the page while the window grows.
+        stacked = self.caption is None or width < (544 if self.stacked is True else 528)
         if self.selector is not None:
             self.selector.set_available_width(max(0, width - (0 if stacked else 196)))
         if stacked == self.stacked:

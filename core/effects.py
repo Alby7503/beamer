@@ -763,6 +763,22 @@ def draw(effect_obj, kind, s, origin=(0.0, 0.0), scale=1.0):
         pen.translate(*origin)
     if scale != 1.0:
         pen.scale(scale, scale)
+    if effect_obj.id not in ("glow", "beam"):
+        k = effect_depth_scale(s)
+        pen.scale(k, k)
+        # Inverse-map the real geometry so authored distances grow while display edges,
+        # the crossing point and the hardware notch stay in their original positions.
+        s = SimpleNamespace(**vars(s))
+        for field, dimensions in (("screen", ("w", "h")), ("point", ("x", "y")),
+                                  ("region", ("x", "y", "w", "h")),
+                                  ("notch", ("x", "y", "w", "h", "r"))):
+            value = getattr(s, field, None)
+            if value is not None:
+                values = vars(value).copy()
+                for dimension in dimensions:
+                    if dimension in values:
+                        values[dimension] /= k
+                setattr(s, field, SimpleNamespace(**values))
     (effect_obj.depart if kind == "depart" else effect_obj.arrive)(pen, s)
     if kind == "depart" and since is None and s.pressure < PUSH_FADE:
         # Several designs' reduced-motion pushes draw at a floor opacity however light the push, so
@@ -1176,9 +1192,10 @@ def still_view(effect, place, effect_size="medium", pace=1.0, effect_size_fracti
     scene points, 2:1, fitted round the marks of its resting frame: an effect shown at its real size
     against the whole pointer journey filled a hundredth of its tile. The pointer glides in from
     outside it. Idle, reduced motion and the hover loop share the camera. It is fitted at Normal, as
-    the still is drawn, so a Length step neither moves it nor builds a scene."""
+    the still is drawn, and at Medium Size so changing Size never zooms away its growth."""
     still_time(effect, place, effect_size, pace, effect_size_fraction)
-    return _still_view(_still_key(effect), place, effect_size, 1.0, effect_size_fraction)
+    # Size is a visual comparison: fitting anew to its marks would zoom out as they grow.
+    return _still_view(_still_key(effect), place, "medium", 1.0, None)
 
 
 def still_time(effect, place, effect_size="medium", pace=1.0, effect_size_fraction=None):
@@ -1217,9 +1234,8 @@ _SIZE_PRESETS = ("small", "medium", "large")
 MIN_EFFECT_PACE = 0.25
 MAX_EFFECT_PACE = 2.5
 MIN_EFFECT_SIZE_FRACTION = 0.02
-MAX_EFFECT_SIZE_FRACTION = 0.08
+MAX_EFFECT_SIZE_FRACTION = 0.25
 _MIN_EDGE_DEPTH = 24.0
-_MAX_EDGE_DEPTH = 144.0
 _EFFECT_REFERENCE_DEPTH = 36.0
 
 
@@ -1278,11 +1294,11 @@ def edge_depth(screen_w, screen_h, size="medium", size_fraction=None):
     """The edge band's depth in screen units, scaled to the shorter side of its display."""
     fraction = (float(size_fraction) if valid_effect_size_fraction(size_fraction)
                 else _SIZE_FRACTIONS.get(size, _SIZE_FRACTIONS["medium"]))
-    return max(_MIN_EDGE_DEPTH, min(_MAX_EDGE_DEPTH, min(float(screen_w), float(screen_h)) * fraction))
+    return max(_MIN_EDGE_DEPTH, min(float(screen_w), float(screen_h)) * fraction)
 
 
 def effect_depth_scale(s):
-    """Scale material depths from their 1200 by 800 reference canvas to this screen and Size."""
+    """Scale authored distances from their 1200 by 800 reference canvas to this screen and Size."""
     return edge_depth(s.screen.w, s.screen.h, getattr(s, "effect_size", "medium"),
                       getattr(s, "effect_size_fraction", None)) / _EFFECT_REFERENCE_DEPTH
 

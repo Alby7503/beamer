@@ -6,6 +6,7 @@ import logging
 import os
 import sys
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
@@ -94,6 +95,78 @@ class InjectorCase(unittest.TestCase):
 
     def keys(self):
         return [(e.fields["code"], e.fields["down"], e.fields["flags"]) for e in self.quartz.posted if e.kind == "key"]
+
+
+class UserActivityTests(InjectorCase):
+    def setUp(self):
+        super().setUp()
+        self._hid = mock.patch.object(injector, "_HID_QUARTZ", self.quartz)
+        self._hid.start()
+        injector._power_api = None
+        injector._power_assertion_id.value = 0
+        injector._power_last_activity = float("-inf")
+        injector._power_warning_logged = False
+        self.addCleanup(setattr, injector, "_power_api", None)
+        self.addCleanup(setattr, injector._power_assertion_id, "value", 0)
+
+    def tearDown(self):
+        # Stop treating the fake as the HID tap before release_all posts, so teardown never reaches real IOKit.
+        self._hid.stop()
+        super().tearDown()
+
+    def test_a_fake_quartz_never_declares_activity(self):
+        self._hid.stop()
+        call = mock.Mock(return_value=0)
+        with mock.patch.object(injector, "_load_power_api", return_value=(call, "activity-name")):
+            injector.inject_key("a", True)
+        self._hid.start()
+
+        self.assertEqual(len(self.quartz.posted), 1)
+        call.assert_not_called()
+
+    def test_remote_input_declares_user_activity_on_first_event(self):
+        call = mock.Mock(return_value=0)
+        with mock.patch.object(injector, "_load_power_api", return_value=(call, "activity-name")):
+            injector.inject_key("a", True)
+
+        call.assert_called_once_with("activity-name", injector._IOPM_USER_ACTIVE_LOCAL, mock.ANY)
+
+    def test_remote_input_activity_is_throttled_during_a_burst(self):
+        call = mock.Mock(return_value=0)
+        with mock.patch.object(injector, "_load_power_api", return_value=(call, "activity-name")), \
+                mock.patch.object(injector.time, "monotonic", side_effect=(10.0, 10.5)):
+            injector.inject_key("a", True)
+            injector.inject_key("a", False)
+
+        call.assert_called_once()
+
+    def test_remote_input_activity_is_declared_again_after_one_second(self):
+        call = mock.Mock(return_value=0)
+        with mock.patch.object(injector, "_load_power_api", return_value=(call, "activity-name")), \
+                mock.patch.object(injector.time, "monotonic", side_effect=(10.0, 11.0)):
+            injector.inject_key("a", True)
+            injector.inject_key("a", False)
+
+        self.assertEqual(call.call_count, 2)
+
+    def test_no_injected_input_does_not_declare_activity(self):
+        call = mock.Mock(return_value=0)
+        with mock.patch.object(injector, "_load_power_api", return_value=(call, "activity-name")):
+            with self.assertLogs(injector.LOGGER, "WARNING"):
+                injector.inject_key("unknown-key", True)
+
+        call.assert_not_called()
+
+    def test_a_failed_activity_call_does_not_stop_input_or_log_repeatedly(self):
+        call = mock.Mock(side_effect=OSError("IOKit unavailable"))
+        with mock.patch.object(injector, "_load_power_api", return_value=(call, "activity-name")), \
+                mock.patch.object(injector.time, "monotonic", side_effect=(10.0, 11.0)), \
+                self.assertLogs(injector.LOGGER, "WARNING") as logs:
+            injector.inject_key("a", True)
+            injector.inject_key("a", False)
+
+        self.assertEqual(len(self.quartz.posted), 2)
+        self.assertEqual(len(logs.records), 1)
 
 
 class NavigationKeyFlagTests(InjectorCase):

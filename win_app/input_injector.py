@@ -3,7 +3,6 @@
 import ctypes
 import functools
 import logging
-import subprocess
 import sys
 import threading
 import time
@@ -11,10 +10,20 @@ import unicodedata
 from typing import Callable, Dict, List, Optional, Set, Tuple
 
 from core.keytable import EVDEV_US
-from core import windows_tools
+from core.i18n import tr
 
 
 LOGGER = logging.getLogger(__name__)
+on_problem = None
+_problem_at = float("-inf")
+
+
+def report_input_problem() -> None:
+    global _problem_at
+    now = time.monotonic()
+    if on_problem is not None and now - _problem_at >= 30:
+        _problem_at = now
+        on_problem(tr("Windows blocked Beamer's input; use administrator windows locally and click a normal window on this PC to continue."))
 
 _IS_WINDOWS = sys.platform == "win32"
 
@@ -110,7 +119,9 @@ def _send_input(*inputs: INPUT) -> None:
     array = (INPUT * count)(*inputs)
     sent = user32.SendInput(count, array, ctypes.sizeof(INPUT))
     if sent != count:
-        raise ctypes.WinError(ctypes.get_last_error())
+        error = ctypes.get_last_error()
+        report_input_problem()
+        raise OSError(error, "Windows refused Beamer's input (administrator windows require local input)")
 
 
 def _vk_key_scan(ch: str) -> int:
@@ -474,25 +485,9 @@ def inject_mouse_move(dx: int, dy: int) -> None:
     watch_foreground()
 
 
-# GameInputSvc.exe runs as SYSTEM in the console session and keeps a hidden
-# window of this class, and Windows can hand that window the foreground when
-# the foreground app closes (closing a Hyper-V VM Connection window did it).
-# While it is in front, UIPI refuses every SetCursorPos
-# and silently drops every SendInput from Beamer, which is elevated but not
-# SYSTEM, so the Mac's pointer goes dead on the PC. Nothing Beamer can call
-# takes the foreground back -- SetForegroundWindow, SwitchToThisWindow and an
-# injected Alt tap were all refused -- and moving the PC's own mouse does not
-# either; a click on the PC does, and so does restarting the service, which
-# takes the window with it and leaves Windows to activate an ordinary one.
+# GameInput can leave a SYSTEM-owned window in front; only local input can leave it.
 GAMEINPUT_WINDOW_CLASS = "GameInputServiceWindow"
-GAMEINPUT_RESTART = ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
-                     "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Restart-Service GameInputSvc -Force"]
-# A restart that did not free the pointer must not become a restart loop.
-GAMEINPUT_RESTART_COOLDOWN_SECONDS = 60.0
-
 _seen_foreground = [None]
-_gameinput_lock = threading.Lock()
-_gameinput_restarted_at = [float("-inf")]
 
 
 def _window_class(hwnd) -> str:
@@ -514,53 +509,16 @@ def watch_foreground() -> None:
     if hwnd == _seen_foreground[0]:
         return
     if hwnd and _window_class(hwnd) == GAMEINPUT_WINDOW_CLASS:
-        # Never marked seen, so a restart that failed or is cooling down is
-        # tried again on a later move.
         release_gameinput_foreground()
         return
     _seen_foreground[0] = hwnd
 
 
 def release_gameinput_foreground(after: Optional[Callable[[], None]] = None) -> bool:
-    """If GameInput's window holds the foreground, restart GameInputSvc on a
-    thread of its own -- it takes a second or two, and the caller is the
-    session thread that must keep draining pings -- then run `after`. False
-    when GameInput is not in front, or a restart is already running or ran
-    within the cooldown."""
-    from core import portable_runtime
-    if portable_runtime.enabled():
-        return False
-    if foreground_class() != GAMEINPUT_WINDOW_CLASS:
-        return False
-    if time.monotonic() - _gameinput_restarted_at[0] < GAMEINPUT_RESTART_COOLDOWN_SECONDS:
-        return False
-    if not _gameinput_lock.acquire(blocking=False):
-        return False
-    _gameinput_restarted_at[0] = time.monotonic()
-
-    def restart() -> None:
-        try:
-            LOGGER.warning(
-                "GameInput's service window has the foreground, where Windows refuses Beamer's input; restarting GameInputSvc to free it"
-            )
-            try:
-                completed = windows_tools.run(GAMEINPUT_RESTART, encoding="utf-8", timeout=30)
-            except (OSError, subprocess.TimeoutExpired):
-                LOGGER.exception("Could not restart GameInputSvc; a click on this PC frees the pointer")
-                return
-            if completed.returncode != 0:
-                LOGGER.error("Restarting GameInputSvc failed (%s): %s", completed.returncode, completed.stderr.strip())
-                return
-            LOGGER.info("GameInputSvc restarted; %r now has the foreground", foreground_class())
-            if after is not None:
-                after()
-        except Exception:
-            LOGGER.exception("Freeing the foreground from GameInput failed")
-        finally:
-            _gameinput_lock.release()
-
-    threading.Thread(target=restart, name="Beamer-gameinput", daemon=True).start()
-    return True
+    """Report the SYSTEM-window limitation; service recovery belongs to installation."""
+    if foreground_class() == GAMEINPUT_WINDOW_CLASS:
+        report_input_problem()
+    return False
 
 
 BUTTON_DOWN_FLAGS = {

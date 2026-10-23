@@ -105,12 +105,7 @@ def set_cursor_position(x: int, y: int) -> None:
 
 
 def set_cursor_position_with_callback(x: int, y: int, on_placed=None, *, place_if_current=None) -> None:
-    """SetCursorPos returns FALSE with no error code, and SendInput is dropped
-    in silence, whenever Windows' UIPI puts the foreground window above
-    Beamer's integrity level, so a SendInput move is no fallback. The one such
-    window seen so far is GameInput's (see input_injector); for it the
-    placement runs again once the service has been restarted, and anything
-    else in front is named in the log."""
+    """Report blocked placement without claiming that the receiver arrived."""
     _require()
     x, y = int(x), int(y)
     def place():
@@ -121,22 +116,18 @@ def set_cursor_position_with_callback(x: int, y: int, on_placed=None, *, place_i
             return True
         return False
 
-    # Only the warp and its completion share the receiver's ownership lock. Service restart
-    # scheduling stays outside it, and every deferred retry validates its visit again.
+    # The warp and its completion share the receiver's ownership lock.
     result = place_if_current(place) if place_if_current is not None else place()
     if result is not False:
         return
     error = ctypes.get_last_error()
     import input_injector
 
-    # Placed through this function again, so a refusal after the restart is logged too.
-    if input_injector.release_gameinput_foreground(after=lambda: set_cursor_position_with_callback(
-            x, y, on_placed, place_if_current=place_if_current)):
-        return
     blocker = input_injector.foreground_class()
     # A hold at the return edge lands here on every move, so once per blocker.
     if blocker != _refused_under[0]:
         _refused_under[0] = blocker
+        input_injector.report_input_problem()
         LOGGER.warning(
             "SetCursorPos refused (error %s) with %r in the foreground; Windows refuses Beamer's input "
             "while a window above its integrity level is in front, until a click on this PC",

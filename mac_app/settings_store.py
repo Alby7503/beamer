@@ -383,10 +383,10 @@ class SettingsStore:
             self.save_settings(outcome["settings"])
 
     def set_peer(self, token, **switches):
-        """Turns `send`, `allow_drive` and `in_use` on or off for the machine holding `token`; returns
+        """Turns a local peer switch on or off for the machine holding `token`; returns
         its entry, None when no machine holds it."""
-        if not switches or any(name not in ("send", "allow_drive", "in_use") or not isinstance(value, bool) for name, value in switches.items()):
-            raise SettingsError("only send, allow_drive and in_use can be switched, each on or off")
+        if not switches or any(name not in ("send", "allow_drive", "in_use", "host_pinned") or not isinstance(value, bool) for name, value in switches.items()):
+            raise SettingsError("only send, allow_drive, in_use and host_pinned can be switched, each on or off")
         with self.lock:
             settings = copy.deepcopy(self.current())
             entry = next((peer for peer in settings["peers"] if peer["token"] == token), None)

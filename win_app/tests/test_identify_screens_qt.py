@@ -8,7 +8,7 @@ from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from PySide6.QtCore import QRect, QRectF, Qt
+from PySide6.QtCore import QEventLoop, QRect, QRectF, QTimer, Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
@@ -100,7 +100,20 @@ class IdentifyOverlayTests(unittest.TestCase):
         self.assertEqual(len(controller.windows), 1)
         self.assertEqual(controller.windows[0].number, 1)
         self.assertLessEqual(controller._expiry.remainingTime(), remaining)
-        QTest.qWait(3150)
+        # Observe expiry directly; a separate wait timer can finish before an offscreen timeout
+        # is delivered, and a generous deadline allows for event-loop scheduling under load.
+        loop = QEventLoop()
+        deadline = QTimer()
+        expired = []
+        deadline.setSingleShot(True)
+        deadline.setTimerType(Qt.TimerType.PreciseTimer)
+        deadline.timeout.connect(loop.quit)
+        controller._expiry.timeout.connect(lambda: expired.append(True))
+        controller._expiry.timeout.connect(loop.quit)
+        deadline.start(5000)
+        loop.exec()
+        deadline.stop()
+        self.assertTrue(expired, "the three-second overlay expiry timer did not fire within five seconds")
         self.assertFalse(controller.windows)
         clock.return_value = 3.0
         controller.show_numbers({"0": 2}, display)

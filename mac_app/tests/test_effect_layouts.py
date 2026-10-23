@@ -130,34 +130,61 @@ class EveryLayoutTests(unittest.TestCase):
 
     def test_an_effect_is_framed_as_its_display_alone(self):
         seen = []
+        def probe(pen, s):
+            pen.moveTo(s.screen.w, s.screen.h)
+            seen.append(pen._path[-1][1:])
+            pen.moveTo(s.point.x, s.point.y)
+            seen.append(pen._path[-1][1:])
         fx = effects.Effect("probe", "Probe", "quiet", "", lambda pen, s: None,
-                            lambda pen, s: seen.append((s.screen.w, s.screen.h, s.point.x, s.point.y, s.edge)), 0.0, 0.5)
+                            probe, 0.0, 0.5)
         player = effects.Player()
         player.arrive(0.0, "edge", (1730.0, 500.0), "left", (1728.0, 0.0, 1920.0, 1080.0))
         player.frames(0.1, fx, (3648.0, 1517.0, "mac"), PALETTE, False, True)
-        self.assertEqual(seen, [(1920.0, 1080.0, 2.0, 500.0, "left")])
+        self.assertEqual(len(seen), 2)
+        for actual, expected in zip(seen, [(3648.0, 1080.0), (1730.0, 500.0)]):
+            self.assertEqual(len(actual), len(expected))
+            for got, want in zip(actual, expected):
+                self.assertAlmostEqual(got, want)
 
     def test_an_edge_strip_along_the_whole_desktop_is_cut_to_the_display(self):
         seen = []
-        fx = effects.Effect("probe", "Probe", "quiet", "", lambda pen, s: seen.append(vars(s.region)),
+        def probe(pen, s):
+            r = s.region
+            pen.moveTo(r.x, r.y)
+            pen.lineTo(r.x + r.w, r.y + r.h)
+            seen.extend(pen._path)
+        fx = effects.Effect("probe", "Probe", "quiet", "", probe,
                             lambda pen, s: None, 0.5, 0.0)
         player = effects.Player()
         display = (1728.0, 0.0, 1920.0, 1080.0)
         player.push(0.0, "edge", {"kind": "edge", "edge": "right", "x": 3647.0, "y": 0.0, "w": 1.0, "h": 1517.0},
                     (3647.0, 500.0), 0.5, display=display)
         player.frames(0.0, fx, (3648.0, 1517.0, "mac"), PALETTE, False, True)
-        self.assertEqual((seen[0]["x"], seen[0]["y"], seen[0]["h"]), (1919.0, 0.0, 1080.0))
+        self.assertEqual(len(seen), 2)
+        for actual, expected in zip(seen, [("M", 3647.0, 0.0), ("L", 3648.0, 1080.0)]):
+            self.assertEqual(len(actual), len(expected))
+            self.assertEqual(actual[0], expected[0])
+            for got, want in zip(actual[1:], expected[1:]):
+                self.assertAlmostEqual(got, want)
 
     def test_the_notch_is_only_seen_on_its_own_display(self):
         seen = []
+        def probe(pen, s):
+            notch = getattr(s, "notch", None)
+            if notch is None:
+                seen.append(None)
+            else:
+                pen.moveTo(notch.x, notch.y)
+                seen.append(pen._path[-1][1:])
         fx = effects.Effect("probe", "Probe", "quiet", "", lambda pen, s: None,
-                            lambda pen, s: seen.append(getattr(s, "notch", None)), 0.0, 0.5)
+                            probe, 0.0, 0.5)
         displays = LAYOUTS["left of the primary"]
         for display in displays:
             player = effects.Player()
             player.arrive(0.0, "edge", (display[0] + display[2] / 2.0, display[1] + 2.0), "top", display)
             player.frames(0.1, fx, (3648.0, 1380.0, "mac"), PALETTE, False, True, notch_on(displays))
-        self.assertEqual((seen[0].x, seen[0].y), (NOTCH["x"], 0.0))
+        self.assertAlmostEqual(seen[0][0], 1920.0 + NOTCH["x"])
+        self.assertAlmostEqual(seen[0][1], 0.0)
         self.assertIsNone(seen[1])
 
 

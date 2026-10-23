@@ -193,72 +193,20 @@ def interpret(payload: dict, exe: str, port: int, elevated: bool = True) -> Fire
 
 
 def advise(status: FirewallStatus) -> Advice:
-    """One sentence a non-technical person can act on, and the one button that fixes it."""
+    """Explain the next step without offering privileged changes from the app."""
     port = status.port
     pairing_udp = status.pairing_allowed and status.pairing_covered
     pairing_tcp = status.pairing_tcp_allowed and status.pairing_tcp_covered
-    rule_profiles = ("Private",) + (("Domain",) if "DomainAuthenticated" in status.lan_profiles else ())
     if status.error:
         return Advice(tr("Beamer could not read the Windows Firewall: {error}").format(error=status.error), tr("Check again"), "check")
     if status.blocked:
-        advice = Advice(
-            tr("Windows Firewall is blocking Beamer's input or pairing traffic. This can happen when Cancel was pressed on "
-            "Windows' own \"allow this app\" prompt, and a block rule beats any allow rule, so reinstalling "
-            "does not clear it. Fixing it removes the block and adds the right rules for private networks."),
-            tr("Fix the firewall"),
-            "repair",
-            rule_profiles,
+        return Advice(
+            tr("Windows Firewall has a block rule affecting Beamer's input or pairing traffic; ask your administrator "
+               "to review Beamer's inbound block rules in Windows Firewall."),
+            tr("Check again"), "check",
         )
-    elif not status.allowed:
-        advice = Advice(
-            tr("Windows Firewall has no rule letting your other machines reach Beamer on port {port}, so they will "
-            "say this PC is unreachable. This happens when the installer was run without administrator rights. "
-            "Fixing it adds the rule for private networks.").format(port=port),
-            tr("Fix the firewall"),
-            "repair",
-            rule_profiles,
-        )
-    elif status.public_interfaces and not (status.covered and pairing_udp and pairing_tcp):
-        names = ", ".join(alias for _, alias in status.public_interfaces if alias) or "this network"
-        advice = Advice(
-            tr("Windows treats {names} as a public network, so some of Beamer's firewall rules do not cover it and "
-            "your other machines cannot get in. Trusting it marks the network as private, which lets them in without "
-            "opening the port on every other network this PC joins.").format(names=names),
-            tr("Trust this network"),
-            "trust",
-        )
-    elif not status.covered:
-        names = ", ".join(status.lan_profiles)
-        advice = Advice(
-            tr("Beamer's firewall rule does not apply on this network (Windows calls it {names}). "
-            "Fixing it rewrites the rule to cover it.").format(names=names),
-            tr("Fix the firewall"),
-            "repair",
-            rule_profiles,
-        )
-    elif not pairing_udp or not pairing_tcp:
-        missing = []
-        if not pairing_udp:
-            missing.append((
-                f"the pairing beacon on UDP {PAIRING_PORT}",
-                "a machine that has not been set up by hand will never see this PC in its list, and this PC will not "
-                "hear other machines' pairing announcements",
-            ))
-        if not pairing_tcp:
-            missing.append((
-                f"the pairing exchange on TCP {PAIRING_PORT}",
-                "a machine that finds this PC cannot finish pairing with it",
-            ))
-        advice = Advice(
-            tr("Windows Firewall lets your other machines reach Beamer on port {port}, but there is no rule covering this network for "
-            "{rules}, so {effects}. Fixing it replaces Beamer's inbound firewall rules.").format(
-                port=port, rules=" or for ".join(rule for rule, _ in missing),
-                effects=" and ".join(effect for _, effect in missing)),
-            tr("Fix the firewall"),
-            "repair",
-            rule_profiles,
-        )
-    else:
+    healthy = status.allowed and status.covered and pairing_udp and pairing_tcp
+    if healthy:
         where = tr("this private network") if "Private" in status.lan_profiles else tr("this network")
         return Advice(
             tr("Windows Firewall lets your other machines reach Beamer on port {port} on {where}, and lets a new machine "
@@ -266,15 +214,20 @@ def advise(status: FirewallStatus) -> Advice:
             tr("Check again"),
             "check",
         )
-    if not status.elevated:
+    if "DomainAuthenticated" in status.lan_profiles:
         return Advice(
-            tr("{sentence} Beamer is not running as administrator, so it cannot make this change itself: "
-               "quit Beamer and open it again from the Start menu.").format(sentence=advice.sentence),
-            advice.button,
-            None,
-            advice.rule_profiles,
+            tr("This managed network needs Windows Firewall rules for Beamer; ask your administrator to allow its receiver "
+               "on TCP {port} and pairing on UDP and TCP {pairing_port} for the Domain profile.").format(
+                   port=port, pairing_port=PAIRING_PORT),
+            tr("Check again"), "check",
         )
-    return advice
+    if status.allowed and status.public_interfaces:
+        sentence = tr("Windows treats this network as public; if you trust it, change its network profile to Private in Windows Settings.")
+    else:
+        sentence = tr("Beamer's firewall rules need attention; run the Beamer installer again to repair them for private networks.")
+        if port != protocol.DEFAULT_PORT:
+            sentence = tr("Beamer uses custom port {port}; ask your administrator to allow that port for Beamer on trusted networks.").format(port=port)
+    return Advice(sentence, tr("Check again"), "check")
 
 
 # ---------------------------------------------------------------- Windows

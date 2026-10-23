@@ -86,7 +86,15 @@ Write-Output "Built $Output"
 if ($Release) {
     $Version = (Get-Content (Join-Path $ProjectDir 'VERSION') -Raw).Trim()
     $ReleaseDir = [IO.Path]::GetFullPath((Join-Path $ProjectDir "..\docs\beamer-releases\$Version"))
-    & $Iscc "/O$ReleaseDir" Beamer-Setup.iss
+    $IsccArgs = @("/O$ReleaseDir")
+    if ($SignTool) {
+        # Same signtool line as Sign-BeamerArtifact. Inno Setup turns $q into a quote and $f into the
+        # quoted file it signs; literal quotes here would be re-quoted on the way to ISCC.
+        $IsccArgs += '/DSignInstaller'
+        $IsccArgs += '/Sbeamer=$q' + $SignTool + '$q sign /sha1 EA6F2A81A84E49D31FF7965A50D7DE771601DA0A /tr http://time.certum.pl /td sha256 /fd sha256 $f'
+    }
+    $IsccArgs += 'Beamer-Setup.iss'
+    & $Iscc @IsccArgs
     if ($LASTEXITCODE -ne 0) { throw 'Inno Setup failed' }
     $Setup = Join-Path $ReleaseDir "Beamer-Setup-$Version.exe"
     Sign-BeamerArtifact $Setup

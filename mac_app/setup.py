@@ -75,8 +75,8 @@ setup(
             "packages": ["rumps", "cffi", "nacl"],
             # core/effects.py imports its fx_* modules by name at first use, which py2app's import
             # scan cannot see, so they are named here or the bundle ships without a single effect.
-            # The rest of core/ is named too, through the repo root put on sys.path above, so a module
-            # the scan misses cannot drop out; naming the package whole would ship its tests too.
+            # Other explicit imports supplement the dependency scan; naming core whole would ship
+            # its tests and Qt-only capture/portable modules too.
             "includes": [
                 "objc", "AppKit", "ApplicationServices", "Quartz", "UserNotifications",
                 "core.crash_log", "core.effects", "core.i18n", "core.locale", "core.idle_pointer", "core.ignored", "core.keytable", "core.link", "core.owner", "core.pairing",

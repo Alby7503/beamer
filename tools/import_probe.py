@@ -31,6 +31,11 @@ def module_names(platform: str) -> list:
     folder, entry, extra = APPS[platform]
     own = sorted(path.stem for path in (REPO / folder).glob("*.py") if path.stem not in entry)
     core = sorted(f"core.{path.stem}" for path in (REPO / "core").glob("*.py") if path.stem != "__init__")
+    if platform == "mac":
+        # Qt capture and Windows portable state have no callers in the Mac app.
+        core = [name for name in core if name not in {
+            "core.capture_types", "core.portable_runtime", "core.portable_store",
+        }]
     return ["core"] + core + own + extra
 
 

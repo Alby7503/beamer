@@ -207,7 +207,7 @@ class PhoneUiTests(unittest.TestCase):
                            dict(KEEP_NOTE="kept", peerlist=peerlist))()
         for name in ("name", "word", "where", "detail", "confirm_text", "in_use", "send", "allow",
                      "remove_button", "directions", "direction_group", "shortcut_cycle", "repair_button",
-                     "confirm", "left_out", "left_out_note"):
+                     "confirm", "left_out", "left_out_note", "pin_address"):
             setattr(row, name, Control())
         row.led = SimpleNamespace(set_tone=lambda tone: None)
         row.confirm.visible = False
@@ -217,6 +217,7 @@ class PhoneUiTests(unittest.TestCase):
         self.assertEqual(row.where.text(), "iPhone")
         self.assertFalse(row.directions.visible)
         self.assertFalse(row.direction_group.visible)
+        self.assertFalse(row.pin_address.visible)
         row._ask(False)
         self.assertFalse(row.directions.visible)
         self.assertTrue(row.in_use.visible)

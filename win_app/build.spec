@@ -55,8 +55,6 @@ executable = EXE(
     codesign_identity=None,
     entitlements_file=None,
     icon=str(source_dir / "Beamer.ico"),
-    # Embeds a requireAdministrator manifest so the receiver always runs elevated.
-    # Windows UIPI silently drops SendInput events aimed at a focused elevated
-    # window (e.g. an admin terminal) when the sender isn't elevated too.
-    uac_admin=True,
+    # Elevated targets remain protected by UIPI; installation owns maintenance privileges.
+    uac_admin=False,
 )

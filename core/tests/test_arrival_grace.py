@@ -123,6 +123,29 @@ class ReturnEdgeArrivalGrace(unittest.TestCase):
         self.assertEqual(return_edge.arrival_position(monitors, "left", 0.0), (0, 0))
         self.assertEqual(return_edge.arrival_position([monitors[0]], "left", 0.0), (0, 10))
 
+    def test_focus_display_and_side_land_on_the_mapped_display_beside_a_negative_x_display(self):
+        main = return_edge.Rect(0, 0, 1920, 1080)
+        laptop = return_edge.Rect(-1440, -900, 1440, 900)
+        mapped = {"main": main, "laptop": laptop}
+        link = SimpleNamespace(peer_id=b"owner-peer-id!!!", name="Owner")
+        positions = []
+        desktop = SimpleNamespace(
+            monitors=lambda: [main, laptop], display_map=lambda: mapped,
+            set_cursor_position_with_callback=lambda x, y, on_placed, *, place_if_current:
+                positions.append((x, y)) or place_if_current(on_placed),
+        )
+        responder = receiver.LinkResponder.__new__(receiver.LinkResponder)
+        responder._lock = threading.RLock()
+        responder._owner, responder._visit = link, 1
+        responder._arriving_visit, responder._armed = 1, []
+        responder._callbacks = {"arrival": None}
+
+        with mock.patch.object(receiver.LinkResponder, "_desktop_module", return_value=desktop), \
+                mock.patch.object(receiver.LinkResponder, "_begin_unlock"):
+            responder._land(link, {"edge": "left", "offset": 0.5, "display": "main", "side": "left"}, 1)
+
+        self.assertEqual(positions, [(0, 540)])
+
     def test_take_starts_grace_only_for_the_zone_back_to_its_owner(self):
         self.assertEqual(self._take({"stay": True}), (return_edge.HOLD, return_edge.CROSS))
 

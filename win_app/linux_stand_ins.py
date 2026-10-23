@@ -27,6 +27,9 @@ class FirewallStatus:
     elevated: bool = False
     error: str = ""
     pairing_allowed: bool = True
+    pairing_covered: bool = True
+    pairing_tcp_allowed: bool = True
+    pairing_tcp_covered: bool = True
 
 
 @dataclass(frozen=True)

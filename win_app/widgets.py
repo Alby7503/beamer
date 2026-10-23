@@ -35,6 +35,13 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+# Resolve lazy Qt wrappers before application event filters run: lazy conversion
+# during widget construction triggers the Windows heap-corruption regression.
+# Shiboken's cached-module hook only recognises a positional star-import fromlist.
+for _qt_module in ("PySide6.QtCore", "PySide6.QtGui", "PySide6.QtWidgets"):
+    __import__(_qt_module, globals(), locals(), ("*",))
+del _qt_module
+
 import motion
 import theme
 import tokens

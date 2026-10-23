@@ -33,12 +33,12 @@ class FakeSchtasks:
 
 
 class TaskXmlTests(unittest.TestCase):
-    def test_starts_hidden_elevated_and_never_times_out(self):
+    def test_starts_hidden_with_normal_privilege_and_never_times_out(self):
         root = ET.fromstring(autostart_win.task_xml(EXE, r"STUDIO-PC\alex").replace('encoding="UTF-16"', ""))
         self.assertEqual(root.find("t:Actions/t:Exec/t:Command", NS).text, EXE)
         self.assertEqual(root.find("t:Actions/t:Exec/t:Arguments", NS).text, "--hidden")
         self.assertEqual(root.find("t:Principals/t:Principal/t:UserId", NS).text, r"STUDIO-PC\alex")
-        self.assertEqual(root.find("t:Principals/t:Principal/t:RunLevel", NS).text, "HighestAvailable")
+        self.assertEqual(root.find("t:Principals/t:Principal/t:RunLevel", NS).text, "LeastPrivilege")
         self.assertEqual(root.find("t:Settings/t:ExecutionTimeLimit", NS).text, "PT0S")
         self.assertEqual(root.find("t:Triggers/t:LogonTrigger/t:UserId", NS).text, r"STUDIO-PC\alex")
 
@@ -79,7 +79,7 @@ class SwitchTests(unittest.TestCase):
     def test_refuses_silent_elevation_for_another_users_session(self):
         fake = FakeSchtasks()
         with patch.object(autostart_win, "can_run_for_current_user", return_value=False):
-            with self.assertRaisesRegex(OSError, "administrator account"):
+            with self.assertRaisesRegex(OSError, "signed-in account"):
                 autostart_win.set_enabled(True, EXE, user="STUDIO-PC\\alex", run=fake)
         self.assertEqual(fake.calls, [])
 
@@ -108,18 +108,18 @@ class SwitchTests(unittest.TestCase):
 
 
 class InstallerTests(unittest.TestCase):
-    def test_inno_setup_uses_the_checked_app_helper_for_start_at_sign_in(self):
+    def test_inno_setup_keeps_app_operations_unelevated(self):
         setup = (Path(__file__).parents[1] / "Beamer-Setup.iss").read_text(encoding="utf-8")
         self.assertIn("PrivilegesRequired=lowest", setup)
         self.assertIn('Flags: unchecked', setup[setup.index('[Tasks]') : setup.index('[Files]')])
         code = setup[setup.index("[Code]") :]
-        self.assertIn("RunTaskOperation(ExpandConstant('{app}\\Beamer.exe'), '--enable-autostart', ResultCode)", code)
-        self.assertIn("if IsAdmin then", code)
-        self.assertIn("ShellExec('runas'", code)
+        self.assertIn("Exec(ExpandConstant('{app}\\Beamer.exe'), '--enable-autostart'", code)
+        self.assertIn("Invoke-InstallMaintenance.ps1", code)
+        self.assertNotIn("ShellExec('runas'", code)
         self.assertIn("ewWaitUntilTerminated", code)
         self.assertIn("ResultCode <> 0", code)
         self.assertIn("RaiseException", code)
-        self.assertIn("same administrator account", code)
+        self.assertNotIn("same administrator account", code)
         self.assertNotIn("<Task version=", code)
         self.assertNotIn('/Create /TN', code)
         self.assertNotIn('/delete /tn "Beamer" /f', code)

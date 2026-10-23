@@ -133,14 +133,16 @@ class NearestEdgeTests(unittest.TestCase):
 
 
 class LocatorTests(unittest.TestCase):
-    def _bounds(self, since, reduced):
-        pen = effects.draw(effects.LOCATOR, "arrive", arrival_state(effects.LOCATOR, since, reduced))
+    def _bounds(self, since, reduced, fraction=None):
+        state = arrival_state(effects.LOCATOR, since, reduced)
+        state.effect_size_fraction = fraction
+        pen = effects.draw(effects.LOCATOR, "arrive", state)
         return None if pen is None else pen.bounds
 
-    def test_it_is_never_more_than_260pt_across(self):
+    def test_reference_size_is_never_more_than_260pt_across(self):
         for reduced in (False, True):
             for step in range(0, 80):
-                box = self._bounds(step / 100.0, reduced)
+                box = self._bounds(step / 100.0, reduced, fraction=36.0 / 1117.0)
                 if box is None:
                     continue
                 with self.subTest(since=step / 100.0, reduced=reduced):

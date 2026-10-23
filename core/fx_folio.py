@@ -3,7 +3,7 @@
 import math
 from core.i18n import N_
 
-from .effects import Effect, clamp, ease_out, effect_depth_scale, lerp
+from .effects import Effect, clamp, ease_out, lerp
 from .fx_material import stroke, surface
 
 
@@ -15,15 +15,14 @@ def _sheet(pen, s, level, departing):
     pushing = departing and t is None
     p = clamp(s.pressure) if pushing else 1.0
     u = 0.0 if pushing else clamp(t / duration)
-    size = effect_depth_scale(s)
     alpha = clamp(p * 5) if pushing else 1 - clamp((u - 0.58) / 0.42)
     motion = 0.65 if s.reduced else p
     at = surface(pen, s, departing)
     span = (48, 90, 144)[level]
     count = (2, 6, 12)[level]
-    depth = (12, 28, 46)[level] * size
-    base = 3 * size
-    wall = 2 * size
+    depth = (12, 28, 46)[level]
+    base = 3
+    wall = 2
     gap = 0.0
     if not pushing and not s.reduced:
         if departing:

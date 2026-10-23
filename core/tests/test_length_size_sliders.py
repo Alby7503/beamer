@@ -14,10 +14,10 @@ class LengthSizeSliderTests(unittest.TestCase):
         self.assertEqual(effects.length_preset(0.25), "short")
         self.assertEqual(effects.size_preset(0.08), "large")
 
-    def test_fractional_size_scales_against_short_edge_and_keeps_clamp(self):
+    def test_fractional_size_scales_against_short_edge_and_keeps_minimum(self):
         self.assertEqual(effects.edge_depth(1920, 1080, size_fraction=0.03), 32.4)
         self.assertEqual(effects.edge_depth(640, 480, size_fraction=0.02), 24)
-        self.assertEqual(effects.edge_depth(3840, 2160, size_fraction=0.08), 144)
+        self.assertEqual(effects.edge_depth(3840, 2160, size_fraction=0.08), 172.8)
 
     def test_each_style_play_time_uses_shared_effect_timing_and_pace(self):
         self.assertEqual(effects.play_through_seconds("beam", 2.0), 1.2)

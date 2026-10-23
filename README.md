@@ -71,9 +71,10 @@ for arm64, follow [the Linux instructions](docs/flatpak-build.md).
    two Grant buttons on the Permissions page (Accessibility, then Input Monitoring), then Relaunch
    Beamer on the same page: macOS only passes keys to an app started after the grant, so until then
    the pointer crosses but the keyboard does not. On Windows,
-   run the installer. It is not code-signed, because a certificate costs money and Beamer is free,
-   so Windows says "Windows protected your PC" the first time: choose More info, then Run anyway.
-   Beamer on Windows runs as administrator, so expect one UAC prompt when you open it. On Linux,
+   run the installer. It is signed with a Certum code-signing certificate, but Windows may still
+   say "Windows protected your PC" the first time: choose More info, then Run anyway. The installer
+   asks for administrator permission once, for Beamer's firewall rules; Beamer itself runs with
+   your normal rights. On Linux,
    follow [Install on Linux](#install-on-linux) to install Beamer from the Kalkman Code repository.
 2. **Pair them.** On one machine, choose Pair a machine to show a six-digit code. On the other,
    choose that machine from the list and enter the code. It lasts a minute and works once. If it
@@ -165,7 +166,7 @@ About Beamer.
 | Crossing | A drawing of the arrangement, the ways in for each machine (edge, part of the edge, corner, notch), the full-screen hold, resistance, the shortcut and jump keys | A drawing of the arrangement, the ways in for each machine (edge, part of the edge, corner), the full-screen hold, resistance, the shortcut and jump keys |
 | Keyboard | Key mapping, what stays on this Mac, each peer's pointer and scroll speed | Key mapping, including a Mac layout, what stays on this PC, each peer's pointer and scroll speed |
 | Design | Crossing and switch styles, colours, Size and Length, landing animation, Match design, notch and trackpad controls, window appearance (System, Light or Dark) | Crossing and switch styles, colours, Size and Length, landing animation, Match design, window appearance (System, Light or Dark) |
-| Connection | Hide addresses, a peer's address, port and pairing details | Whether Windows Firewall lets a peer in, with a one-button fix; hide addresses; this PC's address, port and pairing details |
+| Connection | Hide addresses, a peer's address, port and pairing details | Whether Windows Firewall lets a peer in and what to do if not; hide addresses; this PC's address, port and pairing details |
 
 Each machine sets its own zones and the machine beyond each one. These settings stay local even
 when Same on all machines is on.
@@ -376,18 +377,17 @@ The installer puts Beamer in `%LOCALAPPDATA%\Beamer` for the current user with a
 shortcut. Quit Beamer from the tray before installing a newer version over it; only one instance
 runs at a time.
 
-Beamer runs elevated (its exe carries a `requireAdministrator` manifest), because Windows silently
-drops input from a non-elevated app aimed at an elevated window such as an admin PowerShell. Start
-Beamer when you sign in, on Overview, writes and removes an elevated `Beamer` logon task; nothing
-else touches autostart.
+Beamer launches with normal user permissions and no administrator prompt. It controls normal
+windows; administrator windows and Windows permission prompts need local input. Overview's
+start-at-sign-in switch uses the same normal permissions. Upgrading lowers an existing elevated
+startup task while preserving whether startup was enabled.
 
-Beamer needs two inbound rules on Private networks: TCP 24820 for input and UDP 24821 for pairing,
-both below the range Windows and macOS hand out for themselves. The app adds them on its first
-elevated start. Connection says in one sentence whether the Mac can get in and offers one
-button for whichever of three things usually stops it: the rule is missing (it adds it), Cancel was
-pressed on Windows' own "allow this app" prompt, which writes a block rule that beats any allow rule
-(it removes the block and adds the rule), or the network is classed as public (it marks the network
-private rather than opening the port on every public network).
+The installer requests administrator permission once for maintenance. It sets private-network
+rules for TCP 24820 input and UDP/TCP 24821 pairing, and attempts recovery of a stuck GameInput
+service. The app only checks firewall state: Connection explains when to rerun the installer or
+mark a trusted network Private in Windows Settings. Custom input ports need a matching rule
+configured by an administrator. If a SYSTEM or administrator window blocks input later, click a
+normal window locally to continue.
 
 **The lock screen.** No elevation lets an app type there: it is the Winlogon secure desktop, which
 admits only SYSTEM. On a PC with the author's separate unlock credential provider installed (not
@@ -437,10 +437,9 @@ On the Mac, double-click `mac_app/Install-Beamer-Mac.command`. It builds a self-
 installs it at `/Applications/Beamer.app`, and leaves it closed so the permission prompts do not
 appear unexpectedly.
 
-On Windows, run `win_app\Install-Beamer.ps1` from an admin PowerShell. It builds and installs
-`%LOCALAPPDATA%\Beamer\Beamer.exe`, adds a Start menu shortcut and the two firewall rules. From a
-non-admin PowerShell it still installs but skips the rules, which the app adds on its first
-elevated start.
+On Windows, run `win_app\Install-Beamer.ps1` from the signed-in user's PowerShell. It builds and
+installs `%LOCALAPPDATA%\Beamer\Beamer.exe`, adds a Start menu shortcut, then asks once for
+administrator permission to add the two firewall rules.
 
 Pairing is the easy path, not the only one: each Connection page still takes an address, port and
 shared token typed by hand, and they must match on both machines.
@@ -504,7 +503,8 @@ On Windows, from `win_app`:
 ```
 
 It runs the tests, builds `Beamer.exe` and compiles `Beamer-Setup.iss` with Inno Setup 6 into
-`Beamer-Setup-<version>.exe`. The installer adds no firewall rules and leaves autostart off.
+`Beamer-Setup-<version>.exe`. The installer adds firewall rules; its optional start-at-sign-in
+task is off by default.
 
 </details>
 

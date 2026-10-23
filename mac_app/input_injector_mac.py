@@ -17,8 +17,10 @@ guards AppKit, so this module stays importable, and its behaviour fakeable,
 on a machine without it.
 """
 
+import ctypes
 import functools
 import logging
+import sys
 import threading
 import time
 import unicodedata
@@ -135,6 +137,51 @@ _scroll_remainders: Dict[str, List[float]] = {"line": [0.0, 0.0], "pixel": [0.0,
 # thread injecting while a reconnect's release_all snapshots and clears would
 # otherwise press a key that nothing then remembers to release.
 _state_lock = threading.RLock()
+_HID_QUARTZ = Quartz
+_power_api = None
+_power_assertion_id = ctypes.c_uint32(0)
+_power_last_activity = float("-inf")
+_power_warning_logged = False
+_POWER_API_UNAVAILABLE = object()
+_IOPM_USER_ACTIVE_LOCAL = 0
+
+
+def _load_power_api():
+    if not sys.platform == "darwin":
+        raise OSError("IOKit display activity is only available on macOS")
+    core_foundation = ctypes.CDLL("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation")
+    iokit = ctypes.CDLL("/System/Library/Frameworks/IOKit.framework/IOKit")
+    create_string = core_foundation.CFStringCreateWithCString
+    create_string.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_uint32]
+    create_string.restype = ctypes.c_void_p
+    name = create_string(None, b"Beamer remote input", 0x08000100)
+    if not name:
+        raise OSError("CFStringCreateWithCString failed")
+    declare_activity = iokit.IOPMAssertionDeclareUserActivity
+    declare_activity.argtypes = [ctypes.c_void_p, ctypes.c_uint32, ctypes.POINTER(ctypes.c_uint32)]
+    declare_activity.restype = ctypes.c_int32
+    return declare_activity, name
+
+
+def _wake_display_for_remote_input() -> None:
+    global _power_api, _power_last_activity, _power_warning_logged
+    now = time.monotonic()
+    if now - _power_last_activity < 1.0 or _power_api is _POWER_API_UNAVAILABLE:
+        return
+    _power_last_activity = now
+    try:
+        if _power_api is None:
+            _power_api = _load_power_api()
+        declare_activity, name = _power_api
+        status = declare_activity(name, _IOPM_USER_ACTIVE_LOCAL, ctypes.byref(_power_assertion_id))
+        if status != 0:
+            raise OSError(f"IOPMAssertionDeclareUserActivity returned {status}")
+    except Exception as error:
+        if not _power_warning_logged:
+            LOGGER.warning("Could not wake the Mac display for remote input: %s", error)
+            _power_warning_logged = True
+        if _power_api is None:
+            _power_api = _POWER_API_UNAVAILABLE
 
 
 def _locked(function):
@@ -435,6 +482,9 @@ def _held_button() -> Optional[str]:
 
 def _post(event) -> None:
     quartz = _require()
+    # Only an event bound for the system's HID tap is user activity; a swapped-in fake must not keep a real display awake.
+    if quartz is _HID_QUARTZ:
+        _wake_display_for_remote_input()
     quartz.CGEventSetIntegerValueField(event, quartz.kCGEventSourceUserData, INJECTED_MARK)
     quartz.CGEventPost(quartz.kCGHIDEventTap, event)
 

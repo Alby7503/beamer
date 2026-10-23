@@ -43,6 +43,20 @@ def peer(identity, name, token, host, platform="macos", paired_at=1_780_000_000,
 
 @unittest.skipIf(kvm_bridge_win is None, "needs PySide6")
 class MachinesWindowTest(unittest.TestCase):
+    def test_address_pin_can_be_released_and_restored_per_machine(self):
+        first = peer(ID_A, "Studio", TOKEN_A, "192.0.2.10")
+        first["host_pinned"] = True
+        self.open(first, peer(ID_B, "Laptop", TOKEN_B, "192.0.2.11"))
+        row = self.window.machines.rows[TOKEN_A]
+        self.assertTrue(row.pin_address.isChecked())
+        row.pin_address.click()
+        self.assertIs(self.settings()["peers"][0]["host_pinned"], False)
+        self.window._persist()
+        self.assertIs(self.settings()["peers"][0]["host_pinned"], False)
+        row.pin_address.click()
+        self.assertIs(self.settings()["peers"][0]["host_pinned"], True)
+        self.assertIs(self.settings()["peers"][1]["host_pinned"], False)
+
     def setUp(self):
         os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
         self.app = QApplication.instance() or QApplication([])

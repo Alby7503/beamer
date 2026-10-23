@@ -287,7 +287,8 @@ class MachinesPanel:
             for r in rows))
         key += (tuple(sorted(self.directions_open)),)
         mode = getattr(getattr(self.owner, "shortcut_goes_to", None), "value", "last")
-        key += (mode, tuple((entry.get("token"), entry.get("shortcut_cycle") is not False)
+        key += (mode, tuple((entry.get("token"), entry.get("shortcut_cycle") is not False,
+                             entry.get("host_pinned") is not False)
                             for entry in self.controller.book.peers()))
         if key != self._rows_key:
             self._rows_key = key
@@ -365,6 +366,14 @@ class MachinesPanel:
             widgets.add(body, widgets.note(tr("Left out of the layout. The shortcut and the menu still reach it.")).view)
         widgets.add(body, widgets.note(self._shown(state.detail)).view)
         entry = next((item for item in self.controller.book.peers() if item.get("token") == row.token), {})
+        if not row.phone:
+            pin = widgets.Switch(tr("Pin address"),
+                                 on_change=lambda on, t=row.token: self._direction(t, host_pinned=on))
+            pin.value = bool(entry.get("host")) and entry.get("host_pinned") is not False
+            pin.set_enabled(bool(entry.get("host")))
+            pin.view.setToolTip_(tr("Keeps this address through reconnects and re-pairing. Turn off to follow address changes automatically."))
+            pin.view.focus_id = (row.token, "host_pinned")
+            widgets.add(body, pin.view)
         if not row.phone and getattr(getattr(self.owner, "shortcut_goes_to", None), "value", "last") == "ticked":
             cycle = widgets.Switch(tr("In the shortcut's cycle"),
                                    on_change=lambda on, peer=entry.get("id"): self.owner._set_shortcut_cycle(peer, on))

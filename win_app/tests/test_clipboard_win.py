@@ -363,6 +363,7 @@ class ClipboardOrchestrationTests(unittest.TestCase):
         self.assertEqual(win32.destroyed, [123, 123])
         self.assertEqual(self.mem32.contents(win32.formats[CF_UNICODETEXT]), b"c\x00o\x00p\x00y\x00\x00\x00")
 
+    @unittest.skipUnless(sys.platform == "win32", "the fake clipboard buffer models Windows' 16-bit wchar_t ABI")
     def test_rapid_large_unicode_writes_keep_the_latest_text(self):
         win32 = FakeWin32(self.mem32)
         copies = [f"copy {n}: café 日本語 \U0001d11e" for n in range(200)]

@@ -1347,6 +1347,7 @@ class LinkSender:
             message = protocol.focus_v6(
                 data["route"], data["target"], data.get("edge"), data.get("offset"),
                 data.get("resistance_px"), data.get("reach"), bool(data.get("stay")),
+                display=data.get("display"), side=data.get("side"),
             )
         elif kind in (protocol.MSG_KEYDOWN, protocol.MSG_KEYUP):
             preserve = message.pop("_preserve_key_name", False)

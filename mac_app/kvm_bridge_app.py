@@ -1320,13 +1320,17 @@ class ControlWindow(AppKit.NSObject):
         self.update_notice_text = widgets.Label("", theme.TYPE["body"], wrap=True)
         self.update_notice.add(self.update_notice_text.view)
         actions = widgets.stack(vertical=False, spacing=12)
+        self.update_action = widgets.Button(tr("Get update"), self, "downloadUpdate:", style="primary")
+        widgets.add(actions, self.update_action.view, full_width=False)
         self.update_notes = widgets.Button(tr("What's new"), self, "downloadUpdate:")
         self.update_dismiss = widgets.Button(tr("Dismiss"), self, "dismissUpdate:")
         widgets.add(actions, self.update_notes.view, full_width=False)
         widgets.add(actions, self.update_dismiss.view, full_width=False)
         self.update_notice.add(actions)
         self.update_notice.view.setHidden_(True)
-        widgets.add(pane, self.update_notice.view)
+        pane.addArrangedSubview_(self.update_notice.view)
+        self.update_notice_width = self.update_notice.view.widthAnchor().constraintEqualToAnchor_(pane.widthAnchor())
+        self.update_notice_width.setPriority_(AppKit.NSLayoutPriorityDragThatCannotResizeWindow)
         # The page host is the only part of the pane that gives way when the window is resized;
         # the commit bar keeps its height on every page.
         host = widgets.stack(spacing=0)
@@ -2351,11 +2355,11 @@ class ControlWindow(AppKit.NSObject):
         widgets.add(body, self.panel.machines_module.view)
         widgets.add(body, self.panel.own_name_module().view)
         widgets.add(body, self.panel.sheet.view)
+        widgets.add(body, self._dock_module().view)
         widgets.add(body, self._status_module().view)
         widgets.add(body, self._keyboard_module().view)
         widgets.add(body, self._same_module().view)
         widgets.add(body, self._login_module().view)
-        widgets.add(body, self._dock_module().view)
         widgets.add(body, self._updates_module().view)
 
     @objc.python_method
@@ -2854,14 +2858,14 @@ class ControlWindow(AppKit.NSObject):
     @objc.python_method
     def _dock_module(self):
         module = widgets.Module()
-        module.add(widgets.eyebrow(tr("Window")))
+        module.add(widgets.eyebrow(tr("Dock and menu bar")))
         self.dock_switch = widgets.Switch(tr("Show in Dock"), on_change=self._set_show_in_dock)
         self.tray_switch = widgets.Switch(tr("Show in menu bar"), on_change=self._set_show_in_tray)
         module.add(self.dock_switch.view)
         module.add(self.tray_switch.view)
         module.add(widgets.note(tr(
-            "With the Dock icon off, Beamer stays in the menu bar and appears in the Dock while its window is open. "
-            "The Dock and the menu bar are never both off: the one still showing cannot be switched off."
+            "For menu-bar-only use, turn off Show in Dock and close this window. "
+            "Beamer stays in the menu bar. Its Dock icon appears while this window is open."
         )).view)
         self._reflect_visibility()
         return module
@@ -2910,15 +2914,22 @@ class ControlWindow(AppKit.NSObject):
     def _updates_module(self):
         module = widgets.Module()
         module.add(widgets.eyebrow(tr("Updates")))
-        self.updates_switch = widgets.Switch(tr("Check for updates"), on_change=self._set_check_updates)
+        self.updates_switch = widgets.Switch(tr("Automatically check for updates"), on_change=self._set_check_updates)
         self.updates_switch.value = self.controller.cfg.check_updates
         module.add(self.updates_switch.view)
         module.add(widgets.note(tr(
-            "Asks GitHub once a day whether there is a newer Beamer. Nothing is sent but the request itself."
+            "Checks GitHub at startup and once a day. Updates are downloaded and installed by you."
         )).view)
+        self.check_updates_button = widgets.Button(tr("Check for updates"), self, "checkForUpdates:", full_width=True)
+        module.add(self.check_updates_button.view)
+        self.update_status = widgets.note("")
+        module.add(self.update_status.view)
         self.update_button = widgets.Button(tr("Download"), self, "downloadUpdate:", style="primary", full_width=True)
         self.update_button.view.setHidden_(True)
         module.add(self.update_button.view)
+        self.update_page_notes = widgets.Button(tr("What's new"), self, "downloadUpdate:", full_width=True)
+        self.update_page_notes.view.setHidden_(True)
+        module.add(self.update_page_notes.view)
         self.update_url = None
         return module
 
@@ -2937,23 +2948,46 @@ class ControlWindow(AppKit.NSObject):
             (self.update_handler or self.show_update)(None)
 
     @objc.python_method
-    def show_update(self, found):
-        """`found` is (version, url) for a newer release, or None."""
-        if not self.controller.cfg.check_updates:
+    def show_update(self, found, manual=False):
+        """`found` is a core Release for a newer version, or None."""
+        if not manual and not self.controller.cfg.check_updates:
             found = None
+        self._manual_update = manual
         self._update = found
         self.update_url = found[1] if found else None
+        self.update_status.set(tr("Beamer {version} is available.").format(version=found[0]) if found else "")
+        motion.set_hidden(self.update_page_notes.view, found is None)
         if found:
             self.update_button.set_title(tr("Download Beamer {version}").format(version=found[0]))
         motion.set_hidden(self.update_button.view, found is None)
         self._refresh_update_notice()
 
+    def checkForUpdates_(self, _sender):
+        if self.update_checker is not None:
+            self.show_update_check("checking", None)
+            self.update_checker.check_now(manual=True)
+
+    @objc.python_method
+    def show_update_check(self, state, found):
+        self.check_updates_button.set_enabled(state != "checking")
+        text = {"checking": tr("Checking for updates…"),
+                "current": tr("Beamer is up to date."),
+                "available": tr("Update available."),
+                "failed": tr("Could not check for updates. Check your connection and try again.")}[state]
+        self.update_status.set(text)
+        if state in ("available", "current"):
+            (self.update_handler or self.show_update)(found, manual=True)
+            if state == "current":
+                self.update_status.set(text)
+
     @objc.python_method
     def _refresh_update_notice(self):
         found = updates.visible_notice(self._update, self.controller.cfg.check_updates,
-                                       self.settings_store.current().get("dismissed_update_version", ""))
+                                       self.settings_store.current().get("dismissed_update_version", ""),
+                                       requested=getattr(self, "_manual_update", False))
         if found:
             self.update_notice_text.set(tr("Beamer {version} is available.").format(version=found[0]))
+        self.update_notice_width.setActive_(bool(found))
         self.update_notice.view.setHidden_(not bool(found))
 
     def dismissUpdate_(self, _sender):
@@ -2965,8 +2999,12 @@ class ControlWindow(AppKit.NSObject):
         except SettingsError as exc:
             self.logger.warning("Update dismissal could not be saved: %s", exc)
             return
+        self._manual_update = False
         self.controller.update_config(cfg)
-        self._refresh_update_notice()
+        if self.update_handler:
+            self.update_handler(self._update)
+        else:
+            self._refresh_update_notice()
 
     def downloadUpdate_(self, _sender):
         if self.update_url:
@@ -4245,7 +4283,7 @@ class ControlWindow(AppKit.NSObject):
         self.length_select = _DesignSliderChoice(tr("Length"), 25, 250, 5, 100, (0.5, 1.0, 2.0),
                                                  effects.LENGTHS, self._design_slider_changed,
                                                  tr("Sets the effect's playback time."))
-        self.size_select = _DesignSliderChoice(tr("Size"), 20, 80, 1, 1000, (0.03, 0.045, 0.06),
+        self.size_select = _DesignSliderChoice(tr("Size"), 20, 250, 1, 1000, (0.03, 0.045, 0.06),
                                                effects.SIZES, self._design_slider_changed,
                                                tr("Sets effect depth relative to the shorter screen edge."))
         self.length_readout = design_readout()
@@ -5110,6 +5148,7 @@ class TrayApp(rumps.App):
         self.update_checker = updates.Checker(
             VERSION, lambda: self.controller.cfg.check_updates,
             lambda found: AppHelper.callAfter(self._update_found, found), logger=logger,
+            on_check=lambda state, found: AppHelper.callAfter(self.control_window.show_update_check, state, found),
         )
         self.control_window.update_checker = self.update_checker
         self.control_window.update_handler = self._update_found
@@ -5124,6 +5163,8 @@ class TrayApp(rumps.App):
         # One tick per direction, so either can be switched off while the other keeps working.
         self.send_item = _tray_item(tr("This Mac drives other machines"), callback=self.toggle_send_to_windows)
         self.receive_item = _tray_item(tr("Other machines drive this Mac"), callback=self.toggle_windows_drives)
+        self.dock_item = _tray_item(tr("Show in Dock"), callback=self.toggle_dock)
+        self.dock_item.state = self.settings_store.current().get("show_in_dock", True)
         self._symbol = None
         super().__init__(
             "Beamer",
@@ -5140,6 +5181,7 @@ class TrayApp(rumps.App):
                 self.receive_item,
                 rumps.separator,
                 _tray_item(tr("Settings…"), callback=self.open_window),
+                self.dock_item,
                 _tray_item(tr("Reload configuration"), callback=self.reload_config),
                 _tray_item(tr("Open log folder"), callback=self.open_log_folder),
                 rumps.separator,
@@ -5158,18 +5200,21 @@ class TrayApp(rumps.App):
         self.full_screen_timer.start()
         self.update_checker.start()
 
-    def _update_found(self, found):
+    def _update_found(self, found, manual=False):
         """On the main thread. The version line in the menu becomes the way to the download."""
-        if not self.controller.cfg.check_updates:
+        if not manual and not self.controller.cfg.check_updates:
             found = None
         self.update_url = found[1] if found else None
-        if found:
-            _set_tray_title(self.header_item, tr("Beamer {version} is available…").format(version=found[0]))
+        notice = updates.visible_notice(found, self.controller.cfg.check_updates,
+                                       self.control_window.settings_store.current().get("dismissed_update_version", ""),
+                                       requested=manual)
+        if notice:
+            _set_tray_title(self.header_item, tr("Beamer {version} is available…").format(version=notice[0]))
             self.header_item.set_callback(self.open_update)
         else:
             _set_tray_title(self.header_item, tr("Beamer {version}").format(version=VERSION))
             self.header_item.set_callback(None)
-        self.control_window.show_update(found)
+        self.control_window.show_update(found, manual=manual)
 
     def open_update(self, _sender):
         if self.update_url:
@@ -5351,11 +5396,17 @@ class TrayApp(rumps.App):
     def open_window(self, _sender):
         self.control_window.show()
 
+    def toggle_dock(self, _sender):
+        self.control_window._set_show_in_dock(not self.settings_store.current().get("show_in_dock", True))
+
     def apply_activation_policy(self, window_open=None):
         if window_open is None:
             window_open = self.control_window.window.isVisible()
         settings = self.settings_store.current()
         show_in_dock = settings.get("show_in_dock", True)
+        dock_item = getattr(self, "dock_item", None)
+        if dock_item is not None:
+            dock_item.state = show_in_dock
         policy = dock_visibility.activation_policy(show_in_dock, window_open)
         AppKit.NSApp.setActivationPolicy_(
             AppKit.NSApplicationActivationPolicyRegular

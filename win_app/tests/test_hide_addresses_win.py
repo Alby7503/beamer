@@ -3,9 +3,11 @@ starts no receiver, hooks or announcer."""
 
 import json
 import os
+import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 try:
     from PySide6.QtWidgets import QApplication
@@ -62,8 +64,16 @@ class HideAddressesWindowTest(unittest.TestCase):
         self.edit_settings(hide_addresses=True)
         self.window.reload_config()
         shown = []
-        self.window.tray.showMessage = lambda title, message, *rest: shown.append(message)
-        self.window._on_alert("Beamer", "Cannot switch — Connected to the Mac at 192.0.2.10")
+        if sys.platform.startswith("linux"):
+            import portal
+
+            with mock.patch.object(portal, "sandboxed", return_value=True), \
+                    mock.patch.object(portal, "notify", side_effect=lambda _title, message: shown.append(message)):
+                self.window._on_alert("Beamer", "Cannot switch — Connected to the Mac at 192.0.2.10")
+        else:
+            self.window.tray = mock.Mock()
+            self.window._on_alert("Beamer", "Cannot switch — Connected to the Mac at 192.0.2.10")
+            shown.append(self.window.tray.showMessage.call_args.args[1])
         self.assertEqual(shown, ["Cannot switch — Connected to the Mac at •••"])
 
 

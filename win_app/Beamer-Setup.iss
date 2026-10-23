@@ -21,28 +21,36 @@ DisableProgramGroupPage=yes
 OutputBaseFilename=Beamer-Setup-{#AppVersion}
 Compression=lzma2/max
 SolidCompression=yes
-; The installer itself still runs per-user; Beamer.exe carries its own requireAdministrator
-; manifest (see build.spec) so SendInput can reach elevated windows. Explorer honours that
-; manifest automatically (UAC shield on the shortcuts), no change needed here for that part.
+; File installation and every Beamer operation stay with the original user. Only the fixed
+; maintenance script requests administrator permission.
 PrivilegesRequired=lowest
 UninstallDisplayIcon={app}\Beamer.exe
-; The single-instance mutex Beamer.exe holds. A running Beamer is elevated, so this per-user setup
-; can neither close it nor replace its locked exe; setup asks for it to be quit from the tray first.
+; An older elevated receiver must still be quit before its executable can be replaced.
 AppMutex=Beamer.Receiver
 SetupIconFile=Beamer.ico
 ; Beamer.exe is x64. This refuses 32-bit Windows with the installer's own message; Windows 11 on
 ; ARM is allowed, as it runs x64 apps under emulation.
 ArchitecturesAllowed=x64compatible
+; When build_win_app.ps1 passes /DSignInstaller and /Sbeamer=..., ISCC signs the setup engine
+; extracted to %TEMP% during install and the uninstaller (SignedUninstaller). Without the define,
+; local builds without a certificate still compile an unsigned installer.
+#ifdef SignInstaller
+SignTool=beamer
+SignedUninstaller=yes
+#endif
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Tasks]
 ; Autostart is asked for, never assumed, so it starts unticked.
-Name: "autostart"; Description: "Start Beamer elevated at sign-in without another UAC prompt"; GroupDescription: "Startup options:"; Flags: unchecked
+Name: "autostart"; Description: "Start Beamer at sign-in"; GroupDescription: "Startup options:"; Flags: unchecked
 
 [Files]
+Source: "Invoke-InstallMaintenance.ps1"; Flags: dontcopy
 Source: "dist\Beamer.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "Install-Maintenance.ps1"; DestDir: "{app}"; Flags: ignoreversion
+Source: "Invoke-InstallMaintenance.ps1"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 ; The same paths Install-Beamer.ps1 writes, so either installer replaces the other's shortcuts
@@ -50,46 +58,46 @@ Source: "dist\Beamer.exe"; DestDir: "{app}"; Flags: ignoreversion
 Name: "{autoprograms}\Beamer"; Filename: "{app}\Beamer.exe"
 
 [InstallDelete]
-; Remove pre-task autostart entries. A Startup shortcut launches the requireAdministrator exe
-; through Explorer and raises UAC on every sign-in, even when the scheduled task is also present.
+; Remove pre-task autostart entries so there is only one starter.
 Type: files; Name: "{userstartup}\Beamer.lnk"
 
 [Registry]
 ; The same legacy Run entry has the same UAC behaviour as the old Startup shortcut.
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueName: "Beamer"; Flags: deletevalue
 
-[Run]
-; CreateProcess refuses a requireAdministrator exe from this non-elevated setup (error 740);
-; shellexec lets Windows raise the UAC prompt instead.
-Filename: "{app}\Beamer.exe"; Description: "{cm:LaunchProgram,Beamer}"; Flags: nowait postinstall skipifsilent shellexec
-
 [UninstallRun]
-; The elevated app reads the interactive account from the session, then removes its task, the
-; legacy global task and firewall rules without relying on the UAC administrator's identity.
-Filename: "{app}\Beamer.exe"; Parameters: "--uninstall-cleanup"; Flags: runhidden shellexec waituntilterminated; Verb: runas; RunOnceId: "BeamerCleanup"
+; The same fixed maintenance entry removes only this user's tasks and this executable's rules.
+Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File ""{app}\Invoke-InstallMaintenance.ps1"" -ExePath ""{app}\Beamer.exe"" -Remove"; Flags: runhidden waituntilterminated; RunOnceId: "BeamerCleanup"
 
 [Code]
-function RunTaskOperation(const Filename, Params: String; var ResultCode: Integer): Boolean;
-begin
-  if IsAdmin then
-    Result := Exec(Filename, Params, '', SW_HIDE, ewWaitUntilTerminated, ResultCode)
-  else
-    Result := ShellExec('runas', Filename, Params, '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-end;
-
-function TaskCommandFailure(const Action: String; const Started: Boolean; const ResultCode: Integer): String;
+function OperationFailure(const Action: String; const Started: Boolean; const ResultCode: Integer): String;
 begin
   if (not Started) and (ResultCode = 1223) then
     Result := 'You cancelled the permission request.'
   else if not Started then
-    Result := 'Windows could not start the task operation: ' + SysErrorMessage(ResultCode)
+    Result := 'Windows could not start the installer operation: ' + SysErrorMessage(ResultCode)
   else
     Result := 'Windows returned exit code ' + IntToStr(ResultCode) + '.';
   Result := Action + ' ' + Result;
 end;
 
-// Keep the old elevated starter until first run migrates it successfully. This also preserves
-// autostart when a silent upgrade does not launch Beamer after replacing the executable.
+function PowerShellPath: String;
+begin
+  Result := ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe');
+end;
+
+function InitializeSetup: Boolean;
+var
+  ResultCode: Integer;
+  Started: Boolean;
+begin
+  ExtractTemporaryFile('Invoke-InstallMaintenance.ps1');
+  Started := Exec(PowerShellPath, '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' +
+    ExpandConstant('{tmp}\Invoke-InstallMaintenance.ps1') + '" -CheckIdentityOnly', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Result := Started and (ResultCode = 0);
+  if not Result then
+    MsgBox('Beamer must be installed by the signed-in user. Run the installer normally; give administrator permission only when maintenance asks.', mbError, MB_OK);
+end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
 var
@@ -97,14 +105,20 @@ var
   Started: Boolean;
   Failure: String;
 begin
-  if (CurStep = ssPostInstall) and WizardIsTaskSelected('autostart') then
+  if CurStep = ssPostInstall then
   begin
-    Started := RunTaskOperation(ExpandConstant('{app}\Beamer.exe'), '--enable-autostart', ResultCode);
+    Started := Exec(PowerShellPath, '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' +
+      ExpandConstant('{app}\Invoke-InstallMaintenance.ps1') + '" -ExePath "' +
+      ExpandConstant('{app}\Beamer.exe') + '"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    if (not Started) or (ResultCode <> 0) then
+      RaiseException(OperationFailure('Beamer was installed, but administrator maintenance did not complete.', Started, ResultCode));
+    if not WizardIsTaskSelected('autostart') then Exit;
+    Started := Exec(ExpandConstant('{app}\Beamer.exe'), '--enable-autostart', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
     if (not Started) or (ResultCode <> 0) then
     begin
-      Failure := TaskCommandFailure('Could not run Beamer sign-in setup.', Started, ResultCode);
+      Failure := OperationFailure('Could not run Beamer sign-in setup.', Started, ResultCode);
       Log(Failure);
-      RaiseException('Beamer was installed, but start at sign-in was not configured. It requires Beamer and the signed-in session to use the same administrator account. ' + Failure);
+      RaiseException('Beamer was installed, but start at sign-in was not configured. ' + Failure);
     end;
   end;
 end;

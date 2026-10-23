@@ -345,7 +345,7 @@ def validate_config(config: Config) -> None:
     if not effects.valid_effect_pace(config.effect_pace):
         raise ConfigError("effect_pace must be a number from 0.25 to 2.5")
     if not effects.valid_effect_size_fraction(config.effect_size_fraction):
-        raise ConfigError("effect_size_fraction must be a number from 0.02 to 0.08")
+        raise ConfigError("effect_size_fraction must be a number from 0.02 to 0.25")
     if config.frame_rate not in tuple(value for value, _name, _divisor in effects.FRAME_RATES):
         raise ConfigError("frame_rate must be one of: display, half, quarter")
     if not isinstance(config.paired_with, str):

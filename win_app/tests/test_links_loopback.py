@@ -96,7 +96,8 @@ class Loopback(unittest.TestCase):
         self.take()
         self.far.stop()
         self.assertTrue(wait_for(lambda: not self.sender.redirecting, 5))
-        self.assertIn("Lost the link to Here", self.alerts)
+        # The owner returns home before the link thread reports the alert.
+        self.assertTrue(wait_for(lambda: "Lost the link to Here" in self.alerts, 5), self.alerts)
 
     def test_a_peer_that_does_not_allow_driving_refuses_and_input_comes_home(self):
         self.far.settings.peer(TOKENS[B])["allow_drive"] = False

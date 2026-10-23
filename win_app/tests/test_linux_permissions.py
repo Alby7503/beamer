@@ -238,6 +238,7 @@ class LinuxPermissionsTest(unittest.TestCase):
         if surface.permission_state is not None:
             surface.permission_state.on_change = surface._on_permission
         surface._set_peer_send = surface._set_peer_allow = surface._set_peer_in_use = lambda *_args: None
+        surface._set_peer_pin = lambda *_args: None
         surface._set_shortcut_cycle = lambda *_args: None
         surface._re_pair = lambda *_args: None
         surface._set_peer_left_out = surface._rename_peer = lambda *_args: None

@@ -17,9 +17,9 @@ class EdgeDepthTests(unittest.TestCase):
                 self.assertAlmostEqual(effects.edge_depth(1512, 982, size), laptop)
                 self.assertAlmostEqual(effects.edge_depth(3840, 2160, size), television)
 
-    def test_small_displays_keep_a_usable_floor_and_large_displays_a_ceiling(self):
+    def test_small_displays_keep_a_usable_floor_and_large_displays_keep_the_fraction(self):
         self.assertEqual(effects.edge_depth(320, 240, "small"), 24.0)
-        self.assertEqual(effects.edge_depth(16000, 9000, "large"), 144.0)
+        self.assertEqual(effects.edge_depth(16000, 9000, "large"), 540.0)
 
     def test_glow_and_beam_draw_the_selected_depth(self):
         expected = {"small": 29.46, "medium": 44.19, "large": 58.92}
