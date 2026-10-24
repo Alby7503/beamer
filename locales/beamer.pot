@@ -4358,6 +4358,10 @@ msgid "This PC's pointer hides while it drives another machine, and after anothe
 msgstr ""
 
 #: win_app/kvm_bridge_win.py
+msgid "On Wayland your desktop controls pointer hiding while this PC drives another machine. Beamer cannot hide the pointer after another machine stops driving this PC."
+msgstr ""
+
+#: win_app/kvm_bridge_win.py
 msgid "On Wayland Beamer cannot see a full-screen app, or a mouse button held before the pointer reaches an edge, so the edges are never held for one and a drag can cross."
 msgstr ""
 

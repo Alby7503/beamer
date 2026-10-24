@@ -1340,6 +1340,11 @@ class WindowsApplication(QWidget):
             tr("This PC's pointer hides while it drives another machine, and after another machine stops driving it, "
             "until its own mouse moves."), "note", wrap=True)
         module.body.addWidget(pointer_note)
+        wayland_pointer_note = widgets.label(
+            tr("On Wayland your desktop controls pointer hiding while this PC drives another machine. "
+               "Beamer cannot hide the pointer after another machine stops driving this PC."), "note", wrap=True)
+        wayland_pointer_note.setVisible(platform_parts.WAYLAND)
+        module.body.addWidget(wayland_pointer_note)
         self.wayland_crossing_note = widgets.label(
             tr("On Wayland Beamer cannot see a full-screen app, or a mouse button held before the pointer reaches an "
             "edge, so the edges are never held for one and a drag can cross."), "note", wrap=True)
@@ -1350,7 +1355,7 @@ class WindowsApplication(QWidget):
                 "note", wrap=True))
         for widget in (self.hold_switch, own_note, hold_note):
             widget.setVisible(not platform_parts.WAYLAND)
-        # Wayland gives an app no way to hide the pointer.
+        # Wayland owns hiding during capture; it offers no global idle-pointer hide.
         for widget in (self.pointer_switch, pointer_note):
             widget.setVisible(self._idle_pointer is not None)
         self.wayland_crossing_note.setVisible(platform_parts.WAYLAND)

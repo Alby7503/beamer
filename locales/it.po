@@ -4420,6 +4420,10 @@ msgid "This PC's pointer hides while it drives another machine, and after anothe
 msgstr "Il puntatore di questo PC si nasconde mentre controlla un altro computer, e dopo che un altro computer smette di controllarlo, finché il suo mouse non si muove."
 
 #: win_app/kvm_bridge_win.py
+msgid "On Wayland your desktop controls pointer hiding while this PC drives another machine. Beamer cannot hide the pointer after another machine stops driving this PC."
+msgstr "Su Wayland è l'ambiente desktop a gestire la visibilità del puntatore mentre questo PC controlla un altro computer. Beamer non può nascondere il puntatore quando un altro computer smette di controllare questo PC."
+
+#: win_app/kvm_bridge_win.py
 msgid "On Wayland Beamer cannot see a full-screen app, or a mouse button held before the pointer reaches an edge, so the edges are never held for one and a drag can cross."
 msgstr "Su Wayland Beamer non vede un'app a schermo intero, né un pulsante del mouse tenuto premuto prima che il puntatore raggiunga un bordo, quindi i bordi non vengono mai bloccati per un'app e un trascinamento può passare."
 
