@@ -43,6 +43,9 @@
   </screenshots>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="1.5.14" date="2026-10-26">
+      <description><p>Scrolling a settings page no longer changes a slider or a drop-down list that the pointer stops over: a control takes the scroll wheel only after it is clicked or reached with the keyboard. When a Windows PC, another Mac or a Linux PC on X11 drives a Mac, holding a letter now opens the macOS accent menu in apps that offer it.</p></description>
+    </release>
     <release version="1.5.13" date="2026-10-24">
       <description><p>Explains on Wayland that the desktop controls pointer visibility while input is shared, and that Beamer cannot hide another application's idle pointer. Pointer hiding on macOS, Windows and X11 is unchanged.</p></description>
     </release>
