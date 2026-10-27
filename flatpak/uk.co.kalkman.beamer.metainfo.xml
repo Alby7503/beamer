@@ -43,6 +43,9 @@
   </screenshots>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="1.5.16" date="2026-10-27">
+      <description><p>On Windows, installing or updating no longer ends with "administrator maintenance did not complete" on a normal permission prompt, so start-at-sign-in and the input recovery task are set up again. With Control administrator windows on, the start-at-sign-in note now says Beamer starts as administrator.</p></description>
+    </release>
     <release version="1.5.15" date="2026-10-27">
       <description><p>On Windows, a new setting, Control administrator windows, lets Beamer move the pointer and type in apps that run as administrator. It is off by default, asks for permission once, and applies only to that PC. When Windows blocks Beamer's input, the notice now names the app in front and appears once for each window, not on every switch, and the firewall check says when it needs administrator permission.</p></description>
     </release>

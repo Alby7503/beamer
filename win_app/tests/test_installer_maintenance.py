@@ -179,7 +179,7 @@ if ($script:action.Path -cne (Join-Path $windows 'System32\WindowsPowerShell\v1.
 if ($script:action.Arguments -cne '-NoLogo -NoProfile -NonInteractive -Command "Restart-Service -Name ''GameInputSvc'' -ErrorAction Stop"') { throw 'Recovery action accepts something other than the constant service restart' }
 if ($script:action.WorkingDirectory -cne (Join-Path $windows 'System32')) { throw 'Recovery uses a user-writable working directory' }
 $sd = [Security.AccessControl.RawSecurityDescriptor]::new($registration.Sddl)
-if ($sd.Owner.Value -ne 'S-1-5-18' -or $sd.Group.Value -ne 'S-1-5-18') { throw 'Interactive user can own or change the task' }
+if ($sd.Owner.Value -ne 'S-1-5-32-544' -or $sd.Group.Value -ne 'S-1-5-18') { throw 'Interactive user can own or change the task' }
 if (-not ($sd.ControlFlags -band [Security.AccessControl.ControlFlags]::DiscretionaryAclProtected)) { throw 'Task permissions can inherit write access' }
 if ($sd.DiscretionaryAcl.Count -ne 3) { throw 'Unexpected task permission grants' }
 $expected = @{ 'S-1-5-18'=268435456; 'S-1-5-32-544'=268435456; 'S-1-5-4'=-1610612736 }

@@ -4733,10 +4733,6 @@ msgid "Update through your software store, or download the Flatpak from the rele
 msgstr ""
 
 #: win_app/kvm_bridge_win.py
-msgid "Starts in the tray when you sign in, without an administrator prompt."
-msgstr ""
-
-#: win_app/kvm_bridge_win.py
 msgid "Seam crossings need X11 on Linux."
 msgstr ""
 
@@ -4817,7 +4813,11 @@ msgid "No portable download is available for this release. See What's new."
 msgstr ""
 
 #: win_app/kvm_bridge_win.py
-msgid "When enabled, Beamer starts in the tray with your normal permissions."
+msgid "Starts in the tray when you sign in, as administrator."
+msgstr ""
+
+#: win_app/kvm_bridge_win.py
+msgid "Starts in the tray when you sign in, without an administrator prompt."
 msgstr ""
 
 #: win_app/kvm_bridge_win.py
@@ -4866,6 +4866,14 @@ msgstr ""
 #: win_app/kvm_bridge_win.py
 #, python-brace-format
 msgid "Could not save this PC's name: {error}"
+msgstr ""
+
+#: win_app/kvm_bridge_win.py
+msgid "When enabled, Beamer starts in the tray as administrator."
+msgstr ""
+
+#: win_app/kvm_bridge_win.py
+msgid "When enabled, Beamer starts in the tray with your normal permissions."
 msgstr ""
 
 #: win_app/kvm_bridge_win.py

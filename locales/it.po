@@ -4809,10 +4809,6 @@ msgid "Update through your software store, or download the Flatpak from the rele
 msgstr "Aggiorna tramite il tuo negozio di software oppure scarica il file Flatpak dalla pagina della versione e aprilo."
 
 #: win_app/kvm_bridge_win.py
-msgid "Starts in the tray when you sign in, without an administrator prompt."
-msgstr "All'accesso si avvia nell'area di notifica, senza richiesta di privilegi di amministratore."
-
-#: win_app/kvm_bridge_win.py
 msgid "Seam crossings need X11 on Linux."
 msgstr "Il passaggio tra le giunture richiede X11 su Linux."
 
@@ -4897,8 +4893,12 @@ msgid "No portable download is available for this release. See What's new."
 msgstr "Per questa versione non è disponibile un download portatile. Consulta Novità."
 
 #: win_app/kvm_bridge_win.py
-msgid "When enabled, Beamer starts in the tray with your normal permissions."
-msgstr "Se attivo, Beamer si avvia nell'area di notifica con i tuoi normali privilegi."
+msgid "Starts in the tray when you sign in, as administrator."
+msgstr "All'accesso si avvia nell'area di notifica, come amministratore."
+
+#: win_app/kvm_bridge_win.py
+msgid "Starts in the tray when you sign in, without an administrator prompt."
+msgstr "All'accesso si avvia nell'area di notifica, senza richiesta di privilegi di amministratore."
 
 #: win_app/kvm_bridge_win.py
 msgid "Only the installed app can start at sign-in."
@@ -4949,6 +4949,14 @@ msgstr "Beamer — {status}: {detail}"
 #, python-brace-format
 msgid "Could not save this PC's name: {error}"
 msgstr "Impossibile salvare il nome di questo PC: {error}"
+
+#: win_app/kvm_bridge_win.py
+msgid "When enabled, Beamer starts in the tray as administrator."
+msgstr "Se attivato, Beamer si avvia nell'area di notifica come amministratore."
+
+#: win_app/kvm_bridge_win.py
+msgid "When enabled, Beamer starts in the tray with your normal permissions."
+msgstr "Se attivo, Beamer si avvia nell'area di notifica con i tuoi normali privilegi."
 
 #: win_app/kvm_bridge_win.py
 #, python-brace-format

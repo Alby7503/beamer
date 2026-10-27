@@ -2208,6 +2208,11 @@ class WindowsApplication(QWidget):
             LOGGER.exception("Could not identify the signed-in account")
             can_start = False
             account_known = False
+        import admin_mode
+        try:
+            admin_on = admin_mode.enabled()
+        except OSError:
+            admin_on = False
         enabled = False
         try:
             enabled = exe is not None and autostart_win.is_enabled()
@@ -2222,9 +2227,11 @@ class WindowsApplication(QWidget):
         elif exe and not can_start:
             hint = tr("Start at sign-in needs Beamer to run as the signed-in account.")
         elif enabled:
-            hint = tr("Starts in the tray when you sign in, without an administrator prompt.")
+            hint = (tr("Starts in the tray when you sign in, as administrator.") if admin_on
+                    else tr("Starts in the tray when you sign in, without an administrator prompt."))
         elif exe:
-            hint = tr("When enabled, Beamer starts in the tray with your normal permissions.")
+            hint = (tr("When enabled, Beamer starts in the tray as administrator.") if admin_on
+                    else tr("When enabled, Beamer starts in the tray with your normal permissions."))
         else:
             hint = tr("Only the installed app can start at sign-in.")
         self.logon_hint = widgets.label(hint, "note", wrap=True)

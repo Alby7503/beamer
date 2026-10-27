@@ -126,7 +126,9 @@ function Update-BeamerGameInputRecovery([switch]$Remove) {
     $action.Arguments = '-NoLogo -NoProfile -NonInteractive -Command "Restart-Service -Name ''GameInputSvc'' -ErrorAction Stop"'
     $action.WorkingDirectory = Join-Path $windows 'System32'
     # Set the protected ACL at registration: no interval with an elevated, user-writable task.
-    $sddl = 'O:SYG:SYD:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGX;;;IU)'
+    # Owner is Administrators, not SYSTEM: a UAC-elevated token cannot assign SYSTEM as owner
+    # (0xD000005A, STATUS_INVALID_OWNER). An SSH admin token can, so SSH tests never caught it.
+    $sddl = 'O:BAG:SYD:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGX;;;IU)'
     $folder.RegisterTaskDefinition($taskName, $definition, (0x6 -bor 0x10), 'S-1-5-18', $null, 5, $sddl) | Out-Null
 }
 

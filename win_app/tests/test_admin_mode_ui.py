@@ -118,3 +118,27 @@ class ElevatedDiagnosticTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SignInHintTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QApplication.instance() or QApplication([])
+
+    def hint(self, *, admin_on, enabled):
+        import admin_mode
+        import autostart_win
+        page = SimpleNamespace(_set_start_at_logon=Mock())
+        with patch.object(admin_mode, "enabled", return_value=admin_on), \
+                patch.object(autostart_win, "installed_exe", return_value=r"C:\Synthetic\Beamer.exe"), \
+                patch.object(autostart_win, "can_run_for_current_user", return_value=True), \
+                patch.object(autostart_win, "is_enabled", return_value=enabled):
+            module = kvm.WindowsApplication._sign_in_module(page)
+        return page.logon_hint.text()
+
+    def test_hint_says_administrator_only_when_the_task_runs_elevated(self):
+        for enabled in (True, False):
+            with self.subTest(enabled=enabled):
+                self.assertIn("as administrator", self.hint(admin_on=True, enabled=enabled))
+                self.assertNotIn("without an administrator prompt", self.hint(admin_on=True, enabled=enabled))
+                self.assertNotIn("as administrator", self.hint(admin_on=False, enabled=enabled))
