@@ -137,6 +137,8 @@ _TITLES = {
     "media_next": "Next Track", "media_prev": "Previous Track", "media_stop": "Stop", "media_play_pause": "Play/Pause",
 }
 _TITLES.update({f"f{index}": f"F{index}" for index in range(1, 25)})
+_TITLES.update({name: name.replace("numpad_", "Num ").replace("_", " ").title()
+                for name in keytable.EVDEV_NAMES.values() if name.startswith("numpad_")})
 VK_TITLES: Dict[int, str] = {code: _TITLES[physical] for code, physical in keytable.EVDEV_NAMES.items()}
 VK_TITLES[96] = "Num Enter"
 

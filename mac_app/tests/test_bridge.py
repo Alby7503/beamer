@@ -4,6 +4,7 @@ test_mac_links.py's. The names re-exported from bridge_fakes below are still imp
 the test modules that have not moved to bridge_fakes."""
 
 import errno
+import gc
 import logging
 import os
 import queue
@@ -12,6 +13,7 @@ import threading
 import time
 import types
 import unittest
+import weakref
 from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
@@ -61,6 +63,63 @@ def drain(controller):
         messages.append(controller.outbound.get_nowait())
     return messages
 
+
+
+class EventTapReturnTests(unittest.TestCase):
+    def test_trampoline_retention_does_not_keep_each_event_alive(self):
+        class Event:
+            pass
+
+        leaked_results = []
+        events = []
+        with mock.patch.object(KVMController, "_event_tap_callback", new=lambda self, p, t, e, r: e):
+            controller = make_controller(FakeClock())
+            for _ in range(1000):
+                event = Event()
+                events.append(weakref.ref(event))
+                leaked_results.append(controller.tap_callback_ref(None, 5, event, None))
+        del event
+        gc.collect()
+        self.assertEqual(sum(ref() is not None for ref in events), 1)
+        self.assertTrue(all(result is leaked_results[0] for result in leaked_results))
+
+    def test_swallow_releases_the_previous_event_and_holders_are_per_tap(self):
+        class Event:
+            pass
+
+        with mock.patch.object(KVMController, "_event_tap_callback", new=lambda self, p, t, e, r: e):
+            first = make_controller(FakeClock()).tap_callback_ref
+            second = make_controller(FakeClock()).tap_callback_ref
+            event = Event()
+            ref = weakref.ref(event)
+            first_result = first(None, 5, event, None)
+            second_result = second(None, 5, object(), None)
+            self.assertIsNot(first_result, second_result)
+            del event
+            self.assertIsNotNone(ref())
+            self.assertIsNone(first(None, 5, None, None))
+            self.assertIsNone(ref())
+
+    def test_callback_boundary_preserves_all_event_results(self):
+        event_types = {
+            value for name, value in vars(FakeQuartz).items()
+            if name.startswith("kCGEvent") and isinstance(value, int)
+        } | set((GESTURE_TYPE, SWIPE_TYPE, MAGNIFY_TYPE, DOCK_CONTROL_TYPE,
+                 media_keys.NX_SYSDEFINED_EVENT_TYPE))
+        with mock.patch.object(KVMController, "_event_tap_callback") as callback:
+            controller = make_controller(FakeClock())
+            for event_type in event_types:
+                for mode in ("pass", "swallow", "replace"):
+                    with self.subTest(event_type=event_type, mode=mode):
+                        event = object()
+                        expected = None if mode == "swallow" else event if mode == "pass" else object()
+                        callback.return_value = expected
+                        result = controller.tap_callback_ref("proxy", event_type, event, "refcon")
+                        callback.assert_called_with("proxy", event_type, event, "refcon")
+                        if expected is None:
+                            self.assertIsNone(result)
+                        else:
+                            self.assertIs(result.__pyobjc_object__, expected)
 
 
 class TranslatorTests(unittest.TestCase):

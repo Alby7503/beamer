@@ -35,6 +35,7 @@ import frame_clock
 import keyboard_layout
 import media_keys
 from core import keytable
+from core.capture_types import MacDeadKeys
 from core import link as link_module
 from core import owner as owner_module
 from core import peerlist
@@ -60,6 +61,24 @@ try:
     import AppKit
 except ImportError:  # pragma: no cover - exercised only off macOS
     AppKit = None
+
+
+class _EventTapCallback:
+    # PyObjC Quartz 12.2.2's m_CGEventTapCallBack leaks its Python result
+    # (pyobjc#694). Let that reference land on one holder per tap instead of
+    # each CGEvent. Keep the event alive through native conversion and replace
+    # it on the next callback. This also works when upstream fixes the leak:
+    # tap_callback_ref owns the holder, so no manual decref/version gate is needed.
+    __slots__ = ("callback", "__pyobjc_object__")
+
+    def __init__(self, callback):
+        self.callback = callback
+        self.__pyobjc_object__ = None
+
+    def __call__(self, proxy, event_type, event, refcon):
+        result = self.callback(proxy, event_type, event, refcon)
+        self.__pyobjc_object__ = result
+        return None if result is None else self
 
 
 CONNECT_TIMEOUT_SECONDS = link_module.CONNECT_SECONDS
@@ -136,6 +155,7 @@ class QuartzEventTranslator:
         self.quartz = quartz
         self.modifier_down = set()
         self.printable_down = {}
+        self.dead_keys = MacDeadKeys()
         # Sub-pixel remainder carried across mousemove events: slow, precise
         # trackpad motion reports fractional per-event deltas that truncate
         # to zero if read as integers and dropped outright. Accumulating as
@@ -165,7 +185,7 @@ class QuartzEventTranslator:
             0x3E: quartz.kCGEventFlagMaskControl,
         }
 
-    def key_result(self, event_type, event, trigger_code, key_map):
+    def key_result(self, event_type, event, trigger_code, key_map, compose=True):
         quartz = self.quartz
         keycode = int(quartz.CGEventGetIntegerValueField(event, quartz.kCGKeyboardEventKeycode))
         is_trigger = keycode == trigger_code
@@ -185,7 +205,11 @@ class QuartzEventTranslator:
             quartz.CGEventGetIntegerValueField(event, quartz.kCGKeyboardEventAutorepeat)
         )
         if is_trigger:
+            self.dead_keys.reset()
             return KeyResult(True, is_down, is_repeat, [])
+        composed = self._dead_key_messages(keycode, is_down, event, compose)
+        if composed is not None:
+            return KeyResult(False, is_down, is_repeat, composed)
         name = SPECIAL_KEY_NAMES.get(keycode)
         if name in ("hangul", "hanja"):
             # Only the keyboard's own key: an input-source switch may post these keycodes itself.
@@ -200,7 +224,7 @@ class QuartzEventTranslator:
             character = self.printable_down.get(keycode) if is_repeat else None
             if character is None:
                 character = self._unicode_character(event, keycode)
-                if character is not None and not is_repeat:
+                if character is not None:
                     self.printable_down[keycode] = character
         else:
             character = self.printable_down.pop(keycode, None)
@@ -326,6 +350,25 @@ class QuartzEventTranslator:
         else:
             self.modifier_down.discard(keycode)
         return is_down
+
+    def _dead_key_messages(self, keycode, down, event, compose):
+        if not compose:
+            self.dead_keys.reset()
+            return None
+        if keycode in self.printable_down:
+            return None
+        shortcut = bool(self.modifier_down & {0x36, 0x37, 0x3b, 0x3e})
+        if down and shortcut and self.dead_keys.swallowed.get(keycode):
+            # A composed hold can become a shortcut; its next down and release must balance.
+            self.dead_keys.swallowed.pop(keycode)
+            self.dead_keys.pending = None
+            return None
+        flags = self.quartz.CGEventGetFlags(event)
+        translated = keyboard_layout.translation_for(keycode, flags)
+        text = self.dead_keys.feed(keycode, down, translated, keyboard_layout.generation(), shortcut)
+        if text is None:
+            return None
+        return [{"type": protocol.MSG_TEXT, "data": {"text": text}}] if text else []
 
     def _special_key_messages(self, keycode, is_down, key_map):
         name = SPECIAL_KEY_NAMES.get(keycode)
@@ -632,7 +675,7 @@ class KVMController:
         self.event_tap = None
         self.tap_source = None
         self.tap_run_loop = None
-        self.tap_callback_ref = self._event_tap_callback
+        self.tap_callback_ref = _EventTapCallback(self._event_tap_callback)
         self.translator = QuartzEventTranslator(quartz)
         self._sent_names = {}
         self.trigger_code = KEY_NAME_TO_CODE[cfg.trigger_key]
@@ -1276,6 +1319,7 @@ class KVMController:
         self.trigger_suppressed = False
         self.translator.modifier_down.clear()
         self.translator.printable_down.clear()
+        self.translator.dead_keys.reset()
         self.translator.reset_mouse_accumulators()
         self.ignore_gate.configure(cfg.ignored_inputs, mouse_only=cfg.mouse_only)
         if self._memory is not None:
@@ -1530,6 +1574,7 @@ class KVMController:
 
     def _local_cleanup(self):
         self.redirecting = False
+        self.translator.dead_keys.reset()
         self._set_cursor_follows_mouse(True)
         self.cursor_pin_point = None
         self.translator.reset_mouse_accumulators()
@@ -1796,18 +1841,20 @@ class KVMController:
                 self.quartz.kCGEventKeyUp,
                 self.quartz.kCGEventFlagsChanged,
             ):
+                keycode = self.quartz.CGEventGetIntegerValueField(event, self.quartz.kCGKeyboardEventKeycode)
                 result = self.translator.key_result(
                     event_type,
                     event,
                     self.trigger_code if "shortcut" in self.cfg.crossing.get("methods", ()) else None,
                     {},
+                    compose=(self.redirecting and not self.cfg.mouse_only
+                             and ignored.key(keycode) not in self.cfg.ignored_inputs),
                 )
                 if result.is_trigger:
                     return self._handle_trigger(result, event)
                 if self.redirecting and not self.owner.away:
                     self._repair_redirecting_disagreement()
                     return event
-                keycode = self.quartz.CGEventGetIntegerValueField(event, self.quartz.kCGKeyboardEventKeycode)
                 if keycode in INPUT_METHOD_KEY_CODES and not (self.redirecting and result.is_down):
                     # A tap goes whole on the press. Its release, and the key at home, stay here.
                     return event
@@ -1894,6 +1941,8 @@ class KVMController:
             # input was away, they are the owner's to match against what it swallows.
             unmatched = []
             for message in messages:
+                if message["type"] == protocol.MSG_TEXT:
+                    continue
                 ident = ("key", message["data"]["key"])
                 if message["type"] == protocol.MSG_KEYDOWN:
                     self._home_presses.add(ident)

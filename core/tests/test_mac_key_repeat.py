@@ -165,6 +165,7 @@ class MacKeyRepeatTests(unittest.TestCase):
                                            kCGEventFlagsChanged=12, kCGEventKeyDown=10, kCGEventKeyUp=11,
                                            CGEventGetIntegerValueField=lambda event, field: event[field])
         translator.printable_down = {}
+        translator._dead_key_messages = lambda *args: None
         translator._unicode_character = lambda event, code: "a"
         translator._special_key_messages = lambda *args: []
         messages = []

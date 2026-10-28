@@ -186,6 +186,10 @@ def _key_at(us: str) -> Optional[Tuple[int, Optional[str]]]:
 
 
 VK_MAP = {
+    **{f"numpad_{digit}": 0x60 + digit for digit in range(10)},
+    "numpad_multiply": 0x6a, "numpad_add": 0x6b, "numpad_separator": 0x6c,
+    "numpad_subtract": 0x6d, "numpad_decimal": 0x6e, "numpad_divide": 0x6f,
+    "numpad_enter": 0x0d, "numpad_equal": 0x92,
     "enter": 0x0D,
     "return": 0x0D,
     "esc": 0x1B,
@@ -247,6 +251,7 @@ for _index in range(13, 21):
 # Named keys that require the extended-key flag (E0 scan prefix) so games,
 # RDP sessions and low-level keyboard hooks read them correctly.
 EXTENDED_KEYS = {
+    "numpad_divide", "numpad_enter",
     "up",
     "down",
     "left",

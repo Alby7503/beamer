@@ -23,6 +23,7 @@ import logging
 from typing import Dict, Optional
 
 from key_codes import PRINTABLE_KEY_FALLBACKS
+from core.capture_types import DeadKey
 
 LOGGER = logging.getLogger("Beamer")
 
@@ -37,6 +38,8 @@ _K_UC_KEY_TRANSLATE_NO_DEAD_KEYS = 1
 
 _chars: Dict[int, Optional[str]] = dict(PRINTABLE_KEY_FALLBACKS)
 _codes: Dict[str, int] = {}
+_translations = {}
+_generation = 0
 for _code, _char in sorted(PRINTABLE_KEY_FALLBACKS.items()):
     _codes.setdefault(_char, _code)
 
@@ -51,10 +54,20 @@ def code_for(character) -> Optional[int]:
     return _codes.get(character)
 
 
-def install(chars: Dict[int, Optional[str]]) -> None:
+def translation_for(keycode, flags):
+    # Carbon's modifier byte uses Caps=1, Shift=2 and Option=8, unlike CGEvent's flags.
+    modifiers = (flags >> 16) & 0x0b
+    return _translations.get((keycode, modifiers))
+
+
+def generation():
+    return _generation
+
+
+def install(chars: Dict[int, Optional[str]], translations=None) -> None:
     """Swaps in a table read from a layout, where a dead key maps to None. Keys the layout leaves
     out keep the US answer, so a shortcut on an unreadable key still goes somewhere sensible."""
-    global _chars, _codes
+    global _chars, _codes, _translations, _generation
     merged: Dict[int, Optional[str]] = dict(PRINTABLE_KEY_FALLBACKS)
     merged.update(chars)
     codes: Dict[str, int] = {}
@@ -67,6 +80,8 @@ def install(chars: Dict[int, Optional[str]]) -> None:
         if code not in chars and char not in codes:
             codes[char] = code
     _chars, _codes = merged, codes
+    _translations = translations or {}
+    _generation += 1
 
 
 class _Carbon:
@@ -90,12 +105,12 @@ class _Carbon:
         core.CFRelease.argtypes = [ctypes.c_void_p]
         self.layout_data_key = ctypes.c_void_p.in_dll(carbon, "kTISPropertyUnicodeKeyLayoutData").value
 
-    def translate(self, layout, keycode, kbd_type, options):
+    def translate(self, layout, keycode, kbd_type, options, modifiers=0):
         dead = ctypes.c_uint32(0)
         length = ctypes.c_ulong(0)
         buffer = (ctypes.c_uint16 * 8)()
         status = self.carbon.UCKeyTranslate(
-            layout, keycode, _K_UC_KEY_ACTION_DOWN, 0, kbd_type, options,
+            layout, keycode, _K_UC_KEY_ACTION_DOWN, modifiers, kbd_type, options,
             ctypes.byref(dead), len(buffer), ctypes.byref(length), buffer,
         )
         if status != 0:
@@ -130,6 +145,33 @@ class _Carbon:
         finally:
             self.core.CFRelease(source)
 
+    def layout_translations(self, source):
+        data = self.carbon.TISGetInputSourceProperty(source, self.layout_data_key)
+        if not data:
+            return {}
+        layout = self.core.CFDataGetBytePtr(data)
+        kbd_type = self.carbon.LMGetKbdType()
+        translations = {}
+        for modifiers in (0, 1, 2, 3, 8, 9, 10, 11):
+            for code in (*LAYOUT_KEY_CODES, 0x31):
+                text, dead = self.translate(layout, code, kbd_type, 0, modifiers)
+                if dead:
+                    text, _ = self.translate(layout, code, kbd_type, _K_UC_KEY_TRANSLATE_NO_DEAD_KEYS, modifiers)
+                    if text and len(text) == 1:
+                        translations[code, modifiers] = DeadKey(text)
+                elif text and len(text) == 1 and text.isprintable():
+                    translations[code, modifiers] = text
+        return translations
+
+    def current_translations(self):
+        source = self.carbon.TISCopyCurrentKeyboardLayoutInputSource()
+        if not source:
+            return {}
+        try:
+            return self.layout_translations(source)
+        finally:
+            self.core.CFRelease(source)
+
 
 _carbon = None
 
@@ -142,13 +184,14 @@ def refresh() -> bool:
         if _carbon is None:
             _carbon = _Carbon()
         chars = _carbon.current_chars()
+        translations = _carbon.current_translations()
     except Exception:
         LOGGER.exception("could not read the keyboard layout; keys follow US positions")
         return False
     if not chars:
         LOGGER.info("the keyboard layout has no key table; keys follow US positions")
         return False
-    install(chars)
+    install(chars, translations)
     return True
 
 

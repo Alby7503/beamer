@@ -1112,7 +1112,7 @@ A key travels as `key`, a name, in `keydown` and `keyup`:
   point, with Shift applied: `"A"` with Shift down, `"a"` without. While Command, Control or Alt
   (not Shift) is held, it sends the key's own unshifted character from its layout instead, so
   Option-V on a Mac is `"v"` and not `"√"`, and a German keyboard's Command-Z is `"z"`. Numpad
-  keys send their character (`"1"`, `"+"`). When Windows cannot compose a dead key and the next
+  keys use the separate keypad names below. When Windows cannot compose a dead key and the next
   character into one code point, it sends the visible sequence through `text` instead; a held base
   key repeats its character as `text` and its physical key-up remains swallowed.
 - **`us`** is sent beside a character: the unshifted, lower-case character the same key position
@@ -1130,7 +1130,11 @@ A key travels as `key`, a name, in `keydown` and `keyup`:
   | Media (`media_keys`) | `volume_mute`, `volume_down`, `volume_up`, `media_next`, `media_prev`, `media_stop`, `media_play_pause`, `brightness_up`, `brightness_down`, `mic_mute` |
   | System actions | `search`, `spotlight`, `dictation` |
 
-  The numpad's Enter is `enter`.
+  Keypad keys use `numpad_0` through `numpad_9`, `numpad_decimal`, `numpad_add`,
+  `numpad_subtract`, `numpad_multiply`, `numpad_divide`, `numpad_enter`, `numpad_equal`
+  and `numpad_separator`. These preserve physical identity, including with Num Lock off;
+  the receiving machine's lock state determines the key's action. Both peers need the keypad
+  fix; older receivers drop these unknown names. Main Return remains `enter`.
   `hangul` and `hanja` are HID Lang1 and Lang2. On a JIS Mac they share the Kana (`0x68`) and Eisu
   (`0x66`) keycodes; on Windows they share VK_KANA and VK_KANJI. A Japanese keyboard's Kana key
   therefore travels as `hangul`, which is accepted because it lands on the same Windows VK.

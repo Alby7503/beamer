@@ -43,6 +43,9 @@
   </screenshots>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="1.5.17" date="2026-10-28">
+      <description><p>Keypad keys now reach the other machine as keypad keys, not as the number row, so apps with keypad shortcuts such as Blender can tell them apart. Both machines need 1.5.17 for this. When a Mac's keyboard controls another machine, an accent from a dead key, such as ´ then e for é, no longer drops when you pause between the two keys. On a Mac, Beamer no longer uses more and more memory while you move the mouse or type.</p></description>
+    </release>
     <release version="1.5.16" date="2026-10-27">
       <description><p>On Windows, installing or updating no longer ends with "administrator maintenance did not complete" on a normal permission prompt, so start-at-sign-in and the input recovery task are set up again. With Control administrator windows on, the start-at-sign-in note now says Beamer starts as administrator.</p></description>
     </release>

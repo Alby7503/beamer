@@ -35,8 +35,8 @@ class ModifierRecoveryTests(unittest.TestCase):
         self.default_desktop = default
         self.hooks._window_proc(10, 0x8001, 0, 0)
 
-    def key(self, vk, scan, down=True):
-        data = self.HookData(vk, scan, 0, 0, 0)
+    def key(self, vk, scan, down=True, flags=0):
+        data = self.HookData(vk, scan, flags, 0, 0)
         return self.hooks._keyboard_proc(
             capture_win.HC_ACTION, capture_win.WM_KEYDOWN if down else capture_win.WM_KEYUP, ctypes.byref(data),
         )
@@ -51,6 +51,54 @@ class ModifierRecoveryTests(unittest.TestCase):
                 patch.object(capture_win, "_register_raw_mouse"), \
                 patch.object(capture_win, "_unregister_window_class"):
             self.hooks._run()
+
+    def test_ctrl_sides_with_and_without_extended_flag_stay_independent(self):
+        for flags in (0, capture_win.LLKHF_EXTENDED):
+            with self.subTest(flags=flags):
+                self.events.clear()
+                self.key(0xA2, 0x1D)
+                self.key(0xA3, 0x1D, flags=flags)
+                self.key(0xA3, 0x1D, False, flags)
+                self.key(0xA2, 0x1D, False)
+                self.assertEqual([(e[0], e[1]) for e in self.events], [
+                    ("cmd", True), ("cmd_r", True), ("cmd_r", False), ("cmd", False),
+                ])
+                self.assertEqual(self.hooks._key_names, {})
+
+    def test_numlock_vk_change_releases_the_held_keypad_press(self):
+        for press, release in ((0x61, 0x23), (0x23, 0x61)):
+            with self.subTest(press=press):
+                self.events.clear()
+                self.key(press, 0x4F)
+                self.key(release, 0x4F, False)
+                self.assertEqual([(e[0], e[1]) for e in self.events], [
+                    ("numpad_1", True), ("numpad_1", False),
+                ])
+                self.assertEqual(self.hooks._key_names, {})
+
+    def test_main_and_keypad_enter_can_be_held_together(self):
+        self.key(0x0D, 0x1C)
+        self.key(0x0D, 0x1C, flags=capture_win.LLKHF_EXTENDED)
+        self.key(0x0D, 0x1C, False)
+        self.key(0x0D, 0x1C, False, capture_win.LLKHF_EXTENDED)
+        self.assertEqual([(e[0], e[1]) for e in self.events], [
+            ("enter", True), ("numpad_enter", True), ("enter", False), ("numpad_enter", False),
+        ])
+        self.assertEqual(self.hooks._key_names, {})
+
+    def test_altgr_without_e0_does_not_reuse_held_left_alt(self):
+        self.key(0xA4, 0x38)
+        self.key(0xA2, 0x21D)
+        self.key(0xA5, 0x38)
+        self.key(0xA2, 0x21D, False)
+        self.key(0xA5, 0x38, False)
+        self.key(0xA4, 0x38, False)
+        self.assertEqual([(e[0], e[1]) for e in self.events], [
+            ("alt", True), ("alt_r", True), ("alt_r", False), ("alt", False),
+        ])
+        self.assertFalse(self.hooks._state.altgr_down)
+        self.assertEqual(self.hooks._state.ctrl_down, set())
+        self.assertEqual(self.hooks._key_names, {})
 
     def test_return_repairs_lost_ctrl_and_altgr_releases_before_another_key(self):
         self.key(0xA2, 0x1D)

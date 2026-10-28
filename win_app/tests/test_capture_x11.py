@@ -228,7 +228,7 @@ class NamesTest(unittest.TestCase):
         self.assertEqual((names[29], names[97]), ("cmd", "cmd_r"))  # Ctrl is "cmd", as on Windows
         self.assertEqual((names[125], names[126]), ("ctrl", "ctrl_r"))  # Super is "ctrl"
         self.assertEqual((names[56], names[100], names[42], names[54]), ("alt", "alt_r", "shift", "shift_r"))
-        self.assertEqual((names[1], names[28], names[96], names[59], names[88], names[194]), ("esc", "enter", "enter", "f1", "f12", "f24"))
+        self.assertEqual((names[1], names[28], names[96], names[59], names[88], names[194]), ("esc", "enter", "numpad_enter", "f1", "f12", "f24"))
 
     def test_the_trigger_names_and_titles_cover_the_default(self):
         self.assertEqual(capture_x11.VK_TITLES[97], "Right Ctrl")
@@ -354,7 +354,7 @@ class KeyTest(Harness):
         self.feed(raw(capture_x11.XI_RAW_KEY_PRESS, 87, sourceid=8))
         self.connection.mods = 0  # Num Lock turned off while 1 is held
         self.feed(raw(capture_x11.XI_RAW_KEY_RELEASE, 87, sourceid=8))
-        self.assertEqual(self.seen.keys, [("1", True, 79, None), ("1", False, 79, None)])
+        self.assertEqual(self.seen.keys, [("numpad_1", True, 79, None), ("numpad_1", False, 79, None)])
 
     def test_keys_from_inside_a_grab_come_from_the_grab(self):
         self.hooks.grab_while(lambda: True)

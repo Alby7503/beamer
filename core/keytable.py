@@ -62,7 +62,7 @@ def tap_messages(name: str, down: bool) -> list:
 
 
 # A Linux sender reads evdev codes (linux/input-event-codes.h). Modifiers first, then the named
-# keys of section 7 that have a code. The numpad Enter is `enter`, so two codes share it.
+# keys of section 7 that have a code.
 EVDEV_NAMES = {
     29: "ctrl", 97: "ctrl_r",
     125: "cmd", 126: "cmd_r",
@@ -70,7 +70,12 @@ EVDEV_NAMES = {
     42: "shift", 54: "shift_r",
     58: "caps_lock",
     122: "hangul", 123: "hanja",
-    14: "backspace", 15: "tab", 28: "enter", 96: "enter", 1: "esc", 57: "space",
+    14: "backspace", 15: "tab", 28: "enter", 96: "numpad_enter", 1: "esc", 57: "space",
+    82: "numpad_0", 79: "numpad_1", 80: "numpad_2", 81: "numpad_3",
+    75: "numpad_4", 76: "numpad_5", 77: "numpad_6", 71: "numpad_7",
+    72: "numpad_8", 73: "numpad_9", 83: "numpad_decimal",
+    78: "numpad_add", 74: "numpad_subtract", 55: "numpad_multiply", 98: "numpad_divide",
+    117: "numpad_equal", 121: "numpad_separator",
     111: "delete", 110: "insert", 102: "home", 107: "end", 104: "page_up", 109: "page_down",
     105: "left", 106: "right", 103: "up", 108: "down",
     127: "menu", 99: "print_screen", 119: "pause", 69: "num_lock", 70: "scroll_lock",
@@ -101,6 +106,7 @@ SPEC_NAMES = frozenset(
      "calculator", "mic_mute", "brightness_up", "brightness_down", "spotlight", "dictation",
      "volume_mute", "volume_down", "volume_up", "media_next", "media_prev", "media_stop", "media_play_pause"}
     | {f"f{i}" for i in range(1, 25)}
+    | {name for name in EVDEV_NAMES.values() if name.startswith("numpad_")}
 )
 
 

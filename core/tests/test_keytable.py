@@ -148,7 +148,7 @@ class EvdevTests(unittest.TestCase):
     def test_named_keys_and_the_numpad_enter(self):
         self.assertEqual(keytable.evdev_physical(1), "esc")
         self.assertEqual(keytable.evdev_physical(28), "enter")
-        self.assertEqual(keytable.evdev_physical(96), "enter")
+        self.assertEqual(keytable.evdev_physical(96), "numpad_enter")
         self.assertEqual(keytable.evdev_physical(59), "f1")
         self.assertEqual(keytable.evdev_physical(88), "f12")
         self.assertEqual(keytable.evdev_physical(183), "f13")
@@ -160,10 +160,10 @@ class EvdevTests(unittest.TestCase):
         self.assertEqual(keytable.evdev_physical(225), "brightness_up")
         self.assertEqual(keytable.evdev_physical(248), "mic_mute")
 
-    def test_every_name_it_returns_is_in_the_spec_and_no_name_twice_but_enter(self):
+    def test_every_name_it_returns_is_in_the_spec_and_unique(self):
         names = list(keytable.EVDEV_NAMES.values())
         self.assertLessEqual(set(names), keytable.SPEC_NAMES)
-        self.assertEqual([n for n in set(names) if names.count(n) > 1], ["enter"])
+        self.assertEqual([n for n in set(names) if names.count(n) > 1], [])
 
     def test_a_character_key_or_an_unknown_code_is_none(self):
         self.assertIsNone(keytable.evdev_physical(30))

@@ -42,8 +42,8 @@ LOGGER = logging.getLogger(__name__)
 
 SHIFT_L = 42 + KEYCODE_OFFSET
 
-# Wire names to evdev codes: EVDEV_NAMES turned round, the main Enter for "enter".
-NAME_TO_CODE: Dict[str, int] = {name: code for code, name in keytable.EVDEV_NAMES.items() if code != 96}
+# Wire names to evdev codes, including the separate keypad identities.
+NAME_TO_CODE: Dict[str, int] = {name: code for code, name in keytable.EVDEV_NAMES.items()}
 NAME_TO_CODE.update({"return": 28, "escape": 1})
 US_TO_CODE: Dict[str, int] = {char: code for code, char in keytable.EVDEV_US.items()}
 

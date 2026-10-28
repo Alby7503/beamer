@@ -359,8 +359,8 @@ class LayoutTests(unittest.TestCase):
         self.assertEqual(self.translate(VK_1), "1")
         self.assertEqual(self.translate(VK_1, shift=True), "!")
 
-    def test_the_numpad_types_its_digit(self):
-        self.assertEqual(self.translate(VK_NUMPAD5), "5")
+    def test_the_numpad_keeps_its_physical_identity(self):
+        self.assertEqual(self.translate(VK_NUMPAD5), "numpad_5")
 
 
 class WheelTests(unittest.TestCase):

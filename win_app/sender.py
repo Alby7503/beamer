@@ -555,7 +555,8 @@ class LinkSender:
                 return False
             self._input_method_tap_releases.add(held)
             return True
-        held = vk if vk is not None else name
+        # Main and keypad Enter share a VK; Num Lock can change a keypad key's VK mid-hold.
+        held = name if name.startswith("numpad_") else vk if vk is not None else name
         if down:
             data = self._keys_down.get(held) or self._key_data(name, us)
             self._keys_down[held] = data

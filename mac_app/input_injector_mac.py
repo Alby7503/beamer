@@ -121,6 +121,7 @@ GESTURE_CHORDS = {
 # flag, and the arrows the numeric-pad flag too; system shortcuts (Control+arrows for Spaces, F11
 # for Show Desktop) match on it, and a keyboard event made from nothing does not have it.
 _ARROW_CODES = {KEY_NAME_TO_CODE[name] for name in ("left", "right", "up", "down")}
+_KEYPAD_CODES = {code for name, code in KEY_NAME_TO_CODE.items() if name.startswith("numpad_")}
 _FN_CODES = _ARROW_CODES | {KEY_NAME_TO_CODE[name] for name in ("home", "end", "page_up", "page_down", "delete")}
 _FN_CODES |= {KEY_NAME_TO_CODE[f"f{number}"] for number in range(1, 21)}
 
@@ -215,7 +216,7 @@ def key_flags(key_code: int) -> int:
     flags = 0
     if key_code in _FN_CODES:
         flags |= quartz.kCGEventFlagMaskSecondaryFn
-    if key_code in _ARROW_CODES:
+    if key_code in _ARROW_CODES or key_code in _KEYPAD_CODES:
         flags |= quartz.kCGEventFlagMaskNumericPad
     return flags
 

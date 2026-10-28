@@ -43,13 +43,13 @@ the wheel and swallowing; Raw Input owns how far the hand moved.
 """
 
 import ctypes
+from core import keytable
 import logging
 import sys
 import threading
-import unicodedata
 from typing import Callable, Dict, List, Optional, Set, Tuple, Union
 
-from core.capture_types import DeadKey, TextInput
+from core.capture_types import DeadKey, TextInput, compose_dead_key as _compose_dead_key
 from input_injector import INJECTED_MARK, SCAN_TO_US
 
 LOGGER = logging.getLogger(__name__)
@@ -356,16 +356,12 @@ class KeyboardState:
         return state
 
 
-def _compose_dead_key(dead_key: str, character: str) -> Union[str, TextInput]:
-    name = unicodedata.name(dead_key, "")
-    if name.startswith("MODIFIER LETTER "):
-        name = name[len("MODIFIER LETTER "):]
-    try:
-        combining = unicodedata.lookup("COMBINING " + name)
-    except KeyError:
-        return TextInput(dead_key + character)
-    composed = unicodedata.normalize("NFC", character + combining)
-    return composed if len(composed) == 1 else TextInput(dead_key + character)
+NUMPAD_SCAN_NAMES = {code: name for code, name in keytable.EVDEV_NAMES.items()
+                     if name.startswith("numpad_") and code < 96}
+NUMPAD_VK_NAMES = {0x60 + digit: f"numpad_{digit}" for digit in range(10)}
+NUMPAD_VK_NAMES.update({0x6a: "numpad_multiply", 0x6b: "numpad_add", 0x6c: "numpad_separator",
+                        0x6d: "numpad_subtract", 0x6e: "numpad_decimal", 0x6f: "numpad_divide",
+                        0x92: "numpad_equal"})
 
 
 def key_name(
@@ -374,6 +370,7 @@ def key_name(
     state: KeyboardState,
     translate: Callable[[int, int, Dict[int, int]], Optional[Union[str, DeadKey]]],
     down: bool = True,
+    extended: bool = False,
 ) -> Optional[Union[str, DeadKey, TextInput]]:
     """The wire name for one key press: a named key where there is one, else
     the character it types with Shift and Caps Lock applied (AltGr text is separate). A dead key
@@ -381,7 +378,10 @@ def key_name(
     ignored."""
     if state.ctrl_down:
         state.pending_dead_key = None
-    named = VK_TO_NAME.get(vk)
+    # With Num Lock off Windows reports VK_HOME etc. The scan and E0 bit still identify the pad.
+    named = ("numpad_enter" if vk == 0x0d and extended else
+             NUMPAD_VK_NAMES.get(vk) or (NUMPAD_SCAN_NAMES.get(scan) if not extended else None)
+             or VK_TO_NAME.get(vk))
     if named is not None:
         if state.pending_dead_key and named == "space":
             character, state.pending_dead_key = state.pending_dead_key, None
@@ -540,7 +540,7 @@ class Hooks:
         self._state = KeyboardState()
         self._dead_keys_swallowed: Set[int] = set()
         self._text_keyups_swallowed: Set[int] = set()
-        self._key_names: Dict[int, Tuple[str, Optional[str]]] = {}
+        self._key_names: Dict[Tuple[int, bool, Optional[int]], Tuple[str, Optional[str]]] = {}
         self._composed_local: Dict[int, Union[DeadKey, TextInput]] = {}
         self._failure: Optional[BaseException] = None
         self._handles: List[int] = []
@@ -714,10 +714,15 @@ class Hooks:
                     name = self._composed_local.pop(data.vkCode)
                     self._on_key(name, False, data.vkCode, None)
                 return user32.CallNextHookEx(None, code, wparam, lparam)
-            held = self._key_names.get(data.vkCode)
+            extended = bool(data.flags & LLKHF_EXTENDED)
+            # Only keypad scans may change VK mid-hold when Num Lock changes.
+            # Keep the VK elsewhere: synthetic right Ctrl/Alt can omit E0.
+            keypad = not extended and data.scanCode in NUMPAD_SCAN_NAMES
+            physical = (data.scanCode, extended, None if keypad else data.vkCode)
+            held = self._key_names.get(physical)
             if held is not None:
                 if not down:
-                    del self._key_names[data.vkCode]
+                    del self._key_names[physical]
                 if self._on_key(held[0], down, data.vkCode, held[1]):
                     return 1
                 return user32.CallNextHookEx(None, code, wparam, lparam)
@@ -735,7 +740,7 @@ class Hooks:
                     if self._state.ctrl_down and isinstance(repeated, str):
                         us = None if data.flags & LLKHF_EXTENDED else SCAN_TO_US.get(data.scanCode)
                         self._text_keyups_swallowed.discard(data.vkCode)
-                        self._key_names[data.vkCode] = (repeated, us)
+                        self._key_names[physical] = (repeated, us)
                         if self._on_key(repeated, True, data.vkCode, us):
                             return 1
                         return user32.CallNextHookEx(None, code, wparam, lparam)
@@ -744,7 +749,8 @@ class Hooks:
                     elif isinstance(repeated, TextInput):
                         self._on_key(repeated, True, data.vkCode, None)
                 return 1
-            name = key_name(data.vkCode, data.scanCode, self._state, _to_unicode, down)
+            name = key_name(data.vkCode, data.scanCode, self._state, _to_unicode, down,
+                            bool(data.flags & LLKHF_EXTENDED))
             if isinstance(name, TextInput):
                 if down and self._on_key(name, down, data.vkCode, None):
                     self._text_keyups_swallowed.add(data.vkCode)
@@ -765,7 +771,7 @@ class Hooks:
             us = None if data.flags & LLKHF_EXTENDED else SCAN_TO_US.get(data.scanCode)
             if down:
                 # A repeat and release belong to this press even if layout or AltGr changes.
-                self._key_names[data.vkCode] = (name, us)
+                self._key_names[physical] = (name, us)
             if self._on_key(name, down, data.vkCode, us):
                 return 1
         except Exception:
