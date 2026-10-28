@@ -1135,7 +1135,10 @@ class KVMController:
                     self.logger.warning("cannot cross: Windows is driving this Mac and cannot be reached")
                     return event
                 self.receiving = False
-            if self.set_redirecting(True, edge=step.edge, offset=step.offset):
+            offset = step.offset
+            if offset is not None:
+                offset = crossing.to_pc_offset(offset, self.cfg.crossing.get("pc_shift_pct", 0))
+            if self.set_redirecting(True, edge=step.edge, offset=offset):
                 self._notify_crossing("cross", step)
                 return None
             return event
@@ -1223,6 +1226,7 @@ class KVMController:
         self.set_redirecting(False, came_home=not crossed)
         point = None
         if crossed:
+            offset = crossing.from_pc_offset(offset, self.cfg.crossing.get("pc_shift_pct", 0))
             try:
                 point = crossing.CrossingEngine.arrival_point(
                     edge, offset, self._current_desktop_bounds(), displays=self._current_displays())

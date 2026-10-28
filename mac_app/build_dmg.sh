@@ -63,15 +63,18 @@ else
 fi
 
 if [ ! -x ".venv/bin/python3" ]; then
-    python3 -m venv .venv
+    uv venv .venv
 fi
-.venv/bin/python3 -m pip install -q -r requirements-mac.txt
+# Binary only for cryptography: built from source, its Rust extension names this Mac's home folder,
+# which the check below refuses.
+uv pip install -q --python .venv/bin/python3 --only-binary cryptography -r requirements-mac.txt
 
 rm -rf "$SCRIPT_DIR/build" "$SCRIPT_DIR/dist"
 PYTHONDONTWRITEBYTECODE=1 .venv/bin/python3 -B setup.py py2app
 
 PY2APP_DIR="$(.venv/bin/python3 -c 'from pathlib import Path; import py2app; print(Path(py2app.__file__).parent)')"
-clang -O2 -arch arm64 -mmacosx-version-min=13.0 "$PY2APP_DIR/apptemplate/src/main.c" -framework Cocoa -o "$APP/Contents/MacOS/Beamer"
+# The launcher is built for this Mac's own architecture, which is the one the venv's extension modules are.
+clang -O2 -arch "$(uname -m)" -mmacosx-version-min=13.0 "$PY2APP_DIR/apptemplate/src/main.c" -framework Cocoa -o "$APP/Contents/MacOS/Beamer"
 
 xattr -cr "$APP"
 

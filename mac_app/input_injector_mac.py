@@ -101,6 +101,18 @@ def current_flags(mods_down: Set[str]) -> int:
     return flags
 
 
+ARROW_KEYS = {"left", "right", "up", "down"}
+
+
+def altgr_ctrl(mods_down: Set[str]) -> Optional[str]:
+    """The made-up Left Ctrl of a PC's AltGr, when one is held. Windows sends AltGr as Left Ctrl
+    and Right Alt, which arrive as Cmd (Ctrl under the positional style) and Right Option, and
+    names the key by its character with only shift applied: AltGr+Shift+è comes as é."""
+    if "alt_r" not in mods_down:
+        return None
+    return next((name for name in ("cmd", "ctrl") if name in mods_down), None)
+
+
 def _script(character: str) -> str:
     return unicodedata.name(character, "").split(" ")[0]
 
@@ -154,6 +166,14 @@ def plan_key_event(name: str, down: bool, mods_down: Set[str], held: Optional[Di
         # A repeat stays on the key the press went down on, even if the layout changed since, so
         # its release lets go of the key that is actually down.
         return (held[name] if down else held.pop(name)), None
+    if altgr_ctrl(mods_down) is not None and us in US_KEY_CODES:
+        # The key in the PC key's place under Option, without the Ctrl: the Mac's Option level is
+        # its AltGr level, so an Italian PC's AltGr+Shift+è types { on an Italian Mac. inject_key
+        # leaves the Ctrl's flag off.
+        key_code = US_KEY_CODES[us]
+        if held is not None and down:
+            held[name] = key_code
+        return key_code, None
     key_code = keyboard_layout.code_for(name.lower())
     if key_code is None:
         key_code = _by_place(name, us, mods_down)
@@ -181,7 +201,12 @@ def inject_key(name: str, down: bool, us: Optional[str] = None) -> None:
     if event is None:
         raise RuntimeError(f"CGEventCreateKeyboardEvent failed for {name!r}")
     if text is None:
-        quartz.CGEventSetFlags(event, current_flags(_mods_down))
+        flags = current_flags(_mods_down - {altgr_ctrl(_mods_down)})
+        if name.lower() in ARROW_KEYS:
+            # A real arrow key carries these two; the Spaces and Mission Control shortcuts
+            # (Ctrl+Arrow) ignore an arrow that lacks them.
+            flags |= quartz.kCGEventFlagMaskSecondaryFn | quartz.kCGEventFlagMaskNumericPad
+        quartz.CGEventSetFlags(event, flags)
     else:
         quartz.CGEventKeyboardSetUnicodeString(event, len(text), text)
         # Flags are deliberately cleared: the string says what to type, and

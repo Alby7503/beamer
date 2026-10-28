@@ -194,7 +194,10 @@ class SettingsStore:
         for name, allowed in choices:
             if crossing[name] not in allowed:
                 raise SettingsError(f"crossing.{name} must be one of: {', '.join(allowed)}")
-        for name in ("haptics", "glow", "block_while_dragging", "shortcut_arrival"):
+        shift = crossing["pc_shift_pct"]
+        if isinstance(shift, bool) or not isinstance(shift, int) or not -50 <= shift <= 50:
+            raise SettingsError("crossing.pc_shift_pct must be a whole number from -50 to 50")
+        for name in ("haptics", "glow", "block_while_dragging", "cross_in_full_screen", "shortcut_arrival"):
             if not isinstance(crossing[name], bool):
                 raise SettingsError(f"crossing.{name} must be true or false")
         for name in ("pointer_speed", "scroll_speed"):

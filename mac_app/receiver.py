@@ -188,6 +188,10 @@ class ReceiverServer:
         # by the pointer. The edges on a screen follow that machine's settings, whoever's pointer
         # pushes; without an owner's answer the whole edge is armed.
         self.return_model: Optional[Callable[[str, int], Optional[crossing.ReturnEdge]]] = None
+        # The fraction along an edge as the peer measures it, from this machine's (`offset_out`) and
+        # into it (`offset_in`), for an owner whose screens sit higher or lower than the peer's.
+        self.offset_out: Callable[[float], float] = lambda offset: offset
+        self.offset_in: Callable[[float], float] = lambda offset: offset
         self._focus_callback = focus_callback
         self._peer_driving = False
         # `peer_callback(host, return_edge, resistance_px)` fires once per
@@ -779,7 +783,7 @@ class ReceiverServer:
                 desktop.set_cursor_position(*outcome.position)
             elif outcome.action == crossing.CROSS:
                 LOGGER.info("Pointer pushed through the %s edge; returning input to the %s", model.edge, self._peer_name)
-                self._send_message(connection, session, protocol.switch_msg(self._peer_target, outcome.edge, outcome.offset))
+                self._send_message(connection, session, protocol.switch_msg(self._peer_target, outcome.edge, self.offset_out(outcome.offset)))
         except Exception:
             # Logged once, not at 100Hz: the return edge is dropped until the
             # Mac's next switch re-arms it, and input keeps flowing normally.
@@ -973,7 +977,7 @@ class ReceiverServer:
             return
         try:
             desktop = self._desktop_module()
-            x, y = crossing.arrival_position(desktop.monitors(), edge, offset)
+            x, y = crossing.arrival_position(desktop.monitors(), edge, self.offset_in(offset))
             desktop.set_cursor_position(x, y)
         except Exception:
             LOGGER.exception("Could not place the pointer at the %s edge on arrival", edge)

@@ -38,6 +38,17 @@ class KeyPlanTests(unittest.TestCase):
     def test_a_character_off_the_table_is_typed_as_text(self):
         self.assertEqual(self.plan("é"), (0, "é"))
 
+    def test_altgr_from_a_pc_lands_on_the_key_in_its_place(self):
+        # AltGr+Shift+è on an Italian PC: Left Ctrl and Right Alt held, the key named é, at US [.
+        for ctrl in ("cmd", "ctrl"):
+            mods = {ctrl, "alt_r", "shift"}
+            self.assertEqual(injector.plan_key_event("é", True, mods, us="["), (0x21, None))
+            self.assertEqual(injector.altgr_ctrl(mods), ctrl)
+
+    def test_command_with_left_option_is_a_shortcut_not_altgr(self):
+        self.assertIsNone(injector.altgr_ctrl({"cmd", "alt"}))
+        self.assertEqual(injector.plan_key_event("c", True, {"cmd", "alt"}, us="c"), (0x08, None))
+
     def test_modifiers_are_tracked_in_both_directions(self):
         mods = set()
         injector.plan_key_event("shift", True, mods)

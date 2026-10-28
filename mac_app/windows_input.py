@@ -13,9 +13,11 @@ a push against this Mac's edge.
 """
 
 import logging
+import subprocess
 import threading
 
 import clipboard_mac
+import crossing
 import desktop_mac
 import input_injector_mac
 import no_unlock
@@ -65,6 +67,8 @@ class WindowsInput:
         # go home through a held edge either.
         self.server.edges_held = lambda: controller.crossing_paused or controller.full_screen_app is not None
         self.server.return_model = self._return_model
+        self.server.offset_out = lambda offset: crossing.to_pc_offset(offset, controller.cfg.crossing["pc_shift_pct"])
+        self.server.offset_in = lambda offset: crossing.from_pc_offset(offset, controller.cfg.crossing["pc_shift_pct"])
 
     def _return_model(self, edge, resistance):
         """The way home for the PC's pointer through `edge` of this Mac, from this Mac's own ways
@@ -153,3 +157,11 @@ class WindowsInput:
         # The receiver itself releases whatever the PC was holding before
         # this fires, on both machines alike.
         self._controller.set_receiving(target == "mac")
+        if target == "mac":
+            # The PC's pointer arriving is no user activity to macOS: a warped cursor and posted
+            # events leave a slept display dark. caffeinate -u declares the user active, which
+            # turns it back on.
+            try:
+                subprocess.Popen(["/usr/bin/caffeinate", "-u", "-t", "1"])
+            except OSError:
+                self._logger.exception("Could not wake the display")

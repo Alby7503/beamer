@@ -1,6 +1,6 @@
 import unittest
 
-from crossing import DECAY_S, CrossingEngine
+from crossing import DECAY_S, CrossingEngine, from_pc_offset, to_pc_offset
 
 BOUNDS = (0, 0, 1728, 1117)
 RIGHT_X = 1727.0
@@ -391,6 +391,22 @@ class CornerAndEdgeTests(unittest.TestCase):
         step = drive(machine, RIGHT_X, 0.0, 30, -30, 20)
         self.assertTrue(step.crossed)
         self.assertEqual(step.via, "corner")
+
+
+class PcShiftTests(unittest.TestCase):
+    def test_a_lower_pc_takes_a_lower_stretch_of_this_edge(self):
+        # The PC 20% lower: leaving 60% down this Mac lands 40% down the PC, and back again.
+        self.assertAlmostEqual(to_pc_offset(0.6, 20), 0.4)
+        self.assertAlmostEqual(from_pc_offset(0.4, 20), 0.6)
+
+    def test_no_shift_changes_nothing(self):
+        self.assertEqual(to_pc_offset(0.3, 0), 0.3)
+        self.assertEqual(from_pc_offset(0.3, 0), 0.3)
+
+    def test_beside_no_pc_lands_at_its_nearer_end(self):
+        self.assertEqual(to_pc_offset(0.1, 20), 0.0)
+        self.assertEqual(from_pc_offset(0.9, 20), 1.0)
+        self.assertEqual(to_pc_offset(0.9, -20), 1.0)
 
 
 if __name__ == "__main__":

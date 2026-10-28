@@ -40,6 +40,11 @@ DEFAULT_CROSSING = {
     "glow_style": "glow",
     "glow_colour": "signal",
     "block_while_dragging": True,
+    # Edges normally go quiet while a full-screen app has focus; on keeps them crossing.
+    "cross_in_full_screen": False,
+    # How far the PC's edge sits further down this Mac's edge (further right, when the PC is above
+    # or below), as a percentage of this Mac's edge; negative is up or left. See to_pc_offset.
+    "pc_shift_pct": 0,
     # "Part of the edge": the thirds of `edge` that cross, as return_edge.PARTS names them.
     "edge_parts": ["middle"],
     # A switch by the shortcut or a menu, not a crossing, plays an arrival around the pointer.
@@ -56,6 +61,18 @@ DEFAULT_CROSSING = {
 }
 
 DECAY_S = 0.4
+
+
+def to_pc_offset(offset, shift_pct):
+    """A fraction along this Mac's edge as the fraction along the PC's edge beside it, with the
+    PC's edge moved `shift_pct` percent of this Mac's edge down or right. Clamped: the stretch of
+    this Mac's edge with no PC beside it lands at the PC's nearer end."""
+    return min(1.0, max(0.0, offset - shift_pct / 100))
+
+
+def from_pc_offset(offset, shift_pct):
+    """The inverse of to_pc_offset: a fraction along the PC's edge as one along this Mac's."""
+    return min(1.0, max(0.0, offset + shift_pct / 100))
 CORNER_PX = 8.0
 # How close to the last pixel of the desktop counts as touching it. The cursor's reported
 # location at an edge is fractional on a Retina display, so an exact comparison misses.

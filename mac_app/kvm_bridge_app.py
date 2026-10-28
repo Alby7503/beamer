@@ -1166,6 +1166,9 @@ class ControlWindow(AppKit.NSObject):
         self.landing_box.value = crossing_raw["shortcut_arrival"]
         self.switch_style_select.value = crossing_raw["shortcut_arrival_style"]
         self.dragging_box.value = crossing_raw["block_while_dragging"]
+        self.full_screen_box.value = crossing_raw["cross_in_full_screen"]
+        self.shift_ruler.value = crossing_raw["pc_shift_pct"]
+        self.shift_numeral.set(str(self.shift_ruler.value))
         self.notch_style_select.value = crossing_raw["notch_style"]
         self.notch_after_select.value = crossing_raw["notch_after_ms"]
         self.tick_steps_select.value = crossing_raw["haptic_steps"]
@@ -1800,7 +1803,24 @@ class ControlWindow(AppKit.NSObject):
         module.add(self.corner_row)
         self.dragging_box = widgets.Switch("Don't cross while dragging", on_change=self._changed)
         module.add(self.dragging_box.view)
+        self.full_screen_box = widgets.Switch("Cross while an app is full screen", on_change=self._changed)
+        module.add(self.full_screen_box.view)
+        figure, self.shift_numeral = self._numeral("%")
+        module.add(self._head("PC screen position", figure))
+        self.shift_ruler = widgets.Ruler(
+            -50, 50, (-50, -25, 0, 25, 50), step=1, minor=20, on_change=self._shift_moved,
+            title="PC screen position", arrow_step=5,
+        )
+        module.add(self.shift_ruler.view)
+        module.add(widgets.note(
+            "Lines the PC's edge up with this Mac's, as a percentage of this Mac's edge. Positive moves "
+            "the PC lower, or to the right when it is above or below.").view)
         return module
+
+    @objc.python_method
+    def _shift_moved(self, _value=None):
+        self.shift_numeral.set(str(self.shift_ruler.value))
+        self._changed()
 
     @objc.python_method
     def _way_toggled(self, way, on):
@@ -2471,6 +2491,8 @@ class ControlWindow(AppKit.NSObject):
                 "glow_colour": self.glow_colour_select.value,
                 "effect_length": self.length_select.value or "normal",
                 "block_while_dragging": self.dragging_box.value,
+                "cross_in_full_screen": self.full_screen_box.value,
+                "pc_shift_pct": self.shift_ruler.value,
                 "arrangement_set_at": self.controller.cfg.crossing.get("arrangement_set_at", 0),
             }
             moved = raw["crossing"]["edge"] != self.controller.cfg.crossing.get("edge")
@@ -3189,7 +3211,8 @@ class TrayApp(rumps.App):
         stops the check for the run rather than logging once a second; crossing then simply
         stays on, as it was before this existed."""
         try:
-            self.controller.full_screen_app = full_screen_app()
+            self.controller.full_screen_app = (
+                None if self.controller.cfg.crossing["cross_in_full_screen"] else full_screen_app())
         except Exception:
             self.controller.full_screen_app = None
             self.full_screen_timer.stop()
