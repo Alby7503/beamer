@@ -94,6 +94,11 @@ MSG_FOCUS = "focus"
 MSG_GESTURE = "gesture"
 MSG_SWITCH = "switch"
 MSG_ARRANGEMENT = "arrangement"
+# A window carried across the edge (see handoff on the Mac). `open` asks the receiver to open
+# data.url in its own browser. `ghost` shows an outline of data.w x data.h, captioned data.title,
+# following the pointer until the button comes up. Older receivers ignore both.
+MSG_OPEN = "open"
+MSG_GHOST = "ghost"
 
 # System trackpad gestures. The Mac classifies one at the end of the movement and sends a
 # single message; the name is the finger motion, not its meaning, so the receiver decides
@@ -192,7 +197,11 @@ class SecureSession:
         self.peer_prefix = peer_prefix
 
     def seal(self, msg: dict) -> bytes:
-        body = json.dumps(msg).encode("utf-8")
+        return self.seal_bytes(json.dumps(msg).encode("utf-8"))
+
+    def seal_bytes(self, body: bytes) -> bytes:
+        """A frame of raw bytes rather than a JSON message: a file's contents on the file
+        channel, which would cost a third more as base64 inside JSON."""
         with self.send_lock:
             if self._send_cipher is None:
                 raise ProtocolError("nothing is sealed before the peer's preamble")
@@ -204,6 +213,16 @@ class SecureSession:
         return struct.pack(">I", COUNTER_SIZE + len(ciphertext)) + counter + ciphertext
 
     def open(self, body: bytes) -> dict:
+        plain = self.open_bytes(body)
+        try:
+            message = json.loads(plain.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ProtocolError(f"malformed message body: {exc}") from exc
+        if not isinstance(message, dict):
+            raise ProtocolError("message body must be a JSON object")
+        return message
+
+    def open_bytes(self, body: bytes) -> bytes:
         if self._recv_cipher is None:
             raise ProtocolError("frame received before the peer's preamble")
         if len(body) <= COUNTER_SIZE:
@@ -216,18 +235,17 @@ class SecureSession:
         except InvalidTag:
             raise AuthenticationError() from None
         self._recv_counter = counter
-        try:
-            message = json.loads(plain.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-            raise ProtocolError(f"malformed message body: {exc}") from exc
-        if not isinstance(message, dict):
-            raise ProtocolError("message body must be a JSON object")
-        return message
+        return plain
 
 
 def send_msg(sock: socket.socket, session, msg: dict) -> None:
     with session.send_lock:
         sock.sendall(session.seal(msg))
+
+
+def send_bytes(sock: socket.socket, session, body: bytes) -> None:
+    with session.send_lock:
+        sock.sendall(session.seal_bytes(body))
 
 
 def legacy_frame(msg: dict) -> bytes:
@@ -275,7 +293,16 @@ def recv_msg(sock: socket.socket, session, limit: int = MAX_FRAME_BYTES, deadlin
     return session.open(_recv_exact(sock, length, deadline))
 
 
-def hello_msg(return_edge: str = None, resistance_px: int = None) -> dict:
+def recv_bytes(sock: socket.socket, session, limit: int = MAX_FRAME_BYTES, deadline: float = None) -> bytes:
+    """recv_msg for a frame send_bytes sealed: its raw bytes, not a message."""
+    header = _recv_exact(sock, HEADER_SIZE, deadline)
+    (length,) = struct.unpack(">I", header)
+    if length < 1 or length > limit:
+        raise ProtocolError(f"invalid frame length: {length}")
+    return session.open_bytes(_recv_exact(sock, length, deadline))
+
+
+def hello_msg(return_edge: str = None, resistance_px: int = None, channel: str = None) -> dict:
     """The first encrypted frame. It carries no token: decrypting it is the
     proof the sender holds the shared secret.
 
@@ -284,8 +311,15 @@ def hello_msg(return_edge: str = None, resistance_px: int = None) -> dict:
     first crossing rather than after it -- which is what lets the receiver's
     own machine push back across that same border unprompted. Both are
     omitted when None and unknown keys are ignored, so this needs no version
-    bump."""
+    bump.
+
+    `channel` is set on a second connection that is not an input link: "files"
+    for files dragged across the edge (see file_transfer). It is only opened to
+    a receiver whose welcome said `files`, because an older one would read it as
+    a new input link and drop the real one."""
     data = {"version": PROTOCOL_VERSION}
+    if channel is not None:
+        data["channel"] = channel
     if return_edge is not None:
         data["return_edge"] = return_edge
     if resistance_px is not None:
@@ -293,13 +327,19 @@ def hello_msg(return_edge: str = None, resistance_px: int = None) -> dict:
     return {"type": MSG_HELLO, "data": data}
 
 
-def welcome_msg(error: str = None) -> dict:
+def welcome_msg(error: str = None, files: bool = False, stream: bool = False) -> dict:
     """Sent by the receiver to confirm authentication and protocol version.
     `error` (e.g. "version_mismatch") is set when the sender's declared version
-    is not supported."""
+    is not supported. `files` says this receiver takes files dragged across on
+    a connection of their own, and `stream` a live window the same way; each
+    omitted when false."""
     data = {"version": PROTOCOL_VERSION}
     if error is not None:
         data["error"] = error
+    if files:
+        data["files"] = True
+    if stream:
+        data["stream"] = True
     return {"type": MSG_WELCOME, "data": data}
 
 

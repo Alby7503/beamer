@@ -54,6 +54,20 @@ class EdgeTests(unittest.TestCase):
         self.push(4)
         self.assertTrue(self.link.sender.redirecting, "a sustained push against the left edge never crossed")
 
+    def test_a_drag_of_files_crosses_and_takes_them_and_any_other_drag_does_not(self):
+        sender_ = self.link.sender
+        sent = []
+        sender_._send_files = sent.append
+        sender_.files_endpoint = ("127.0.0.1", 1, "shared-token")
+        sender_._buttons_held = {"left"}
+        sender_.dragged_files = lambda: None
+        self.push(6)
+        self.assertFalse(sender_.redirecting, "a drag with no files crossed")
+        sender_.dragged_files = lambda: ["C:\\a.txt"]
+        self.push(6)
+        self.assertTrue(sender_.redirecting)
+        self.assertEqual(sent, [["C:\\a.txt"]])
+
     def test_the_push_lights_the_edge_it_is_pressing(self):
         # The app once built its sender with no pressure callback, so the PC's own push out to
         # the Mac crossed in the dark while the same edge lit for the Mac's push home.

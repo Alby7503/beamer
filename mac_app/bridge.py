@@ -1,6 +1,7 @@
 import collections
 import errno
 import logging
+import os
 import platform
 import queue
 import socket
@@ -17,7 +18,11 @@ import Quartz
 import clipboard_mac
 import crossing
 import desktop_mac
-from input_injector_mac import INJECTED_MARK
+import file_drag
+import file_transfer
+import handoff
+import stream_mac
+from input_injector_mac import INJECTED_MARK, inject_key, inject_mouse_button
 import gestures
 import ignored
 import keyboard_layout
@@ -52,6 +57,12 @@ SSH_FALLBACK_PORT = 24822
 PING_INTERVAL_SECONDS = 1.0
 DESKTOP_BOUNDS_MAX_AGE_SECONDS = 1.0
 CROSSING_RETRY_SECONDS = 30.0
+# How often a drag against the edge reads the drag pasteboard, and how long a file connection
+# waits on a stalled write before giving up.
+DRAG_CHECK_SECONDS = 0.1
+# How near the desktop's edge, in points, a dragged window is asked about.
+EDGE_SLOP_PT = 2
+FILES_IO_TIMEOUT_SECONDS = 30.0
 ROUND_TRIP_SAMPLES = 8
 ROUND_TRIP_MAX_AGE_SECONDS = 5.0
 # A receiver that accepts the TCP connection but never sends a preamble is, in practice, one
@@ -65,7 +76,9 @@ AUTH_FAILED_STATUS = "Windows could not be authenticated — check the shared to
 # never recorded by the receiver's ProcessedSequence). The sentinel is a
 # purely local marker -- never sent on the wire -- that the outbound worker
 # expands into a real clipboard message (or drops) at send time.
-CONTROL_MESSAGE_TYPES = frozenset({protocol.MSG_FOCUS, protocol.MSG_CLIPBOARD, protocol.MSG_ARRANGEMENT})
+CONTROL_MESSAGE_TYPES = frozenset(
+    {protocol.MSG_FOCUS, protocol.MSG_CLIPBOARD, protocol.MSG_ARRANGEMENT, protocol.MSG_OPEN, protocol.MSG_GHOST}
+)
 _LOCAL_CLIPBOARD_SENTINEL_TYPE = "_local_clipboard"
 _GATE_EXEMPT_TYPES = CONTROL_MESSAGE_TYPES | {_LOCAL_CLIPBOARD_SENTINEL_TYPE}
 
@@ -462,6 +475,8 @@ class KVMController:
         dock_event_reader=None,
         macos_major=None,
         desktop_bounds=None,
+        file_drag=file_drag,
+        dragged_window=handoff.dragged_window,
     ):
         self.cfg = cfg
         self.logger = logger or logging.getLogger("Beamer")
@@ -557,6 +572,19 @@ class KVMController:
         self.on_host_learned = None
         self.crossing = crossing.CrossingEngine.from_config(cfg.crossing)
         self.desktop_bounds = desktop_bounds or self._default_desktop_bounds
+        # Files dragged against the edge go across on their own connection, to the
+        # (host, port, token) of a PC whose welcome said it takes them; None otherwise.
+        self.file_drag = file_drag
+        self.files_endpoint = None
+        self._press_drag_count = None
+        self._drag_files = None
+        self._drag_checked_at = float("-inf")
+        # A window dragged against the edge crosses too (see handoff): read once per press, at the
+        # edge. `stream_ok` is whether the PC's welcome said it shows live windows.
+        self.dragged_window = dragged_window
+        self.stream_ok = False
+        self._drag_window = None
+        self._window_checked = False
         self.notch_range = None
         self.on_crossing = None
         self._crossing_failed = False
@@ -1088,6 +1116,13 @@ class KVMController:
         CROSSING_RETRY_SECONDS or until the next settings save, so one broken
         geometry call cannot log an exception per mouse move -- and a passing
         one cannot leave the edge dead until someone thinks to save a setting."""
+        if event_type == self.quartz.kCGEventLeftMouseDown and self.files_endpoint is not None:
+            # What the drag pasteboard held before this press: a drag that starts during it changes it.
+            self._press_drag_count = self.file_drag.change_count()
+            self._drag_files = None
+            self._drag_checked_at = float("-inf")
+            self._drag_window = None
+            self._window_checked = False
         if self._crossing_failed and self.clock() - self._crossing_failed_at < CROSSING_RETRY_SECONDS:
             return event
         self._crossing_failed = False
@@ -1106,6 +1141,11 @@ class KVMController:
             x, y = location[0], location[1]
             dx = quartz.CGEventGetDoubleValueField(event, quartz.kCGMouseEventDeltaX)
             dy = quartz.CGEventGetDoubleValueField(event, quartz.kCGMouseEventDeltaY)
+            dragging = event_type != quartz.kCGEventMouseMoved
+            files = window = None
+            if event_type == quartz.kCGEventLeftMouseDragged:
+                files = self._dragged_files()
+                window = None if files else self._dragged_window(x, y)
             step = self.crossing.feed(
                 x,
                 y,
@@ -1114,7 +1154,8 @@ class KVMController:
                 self._current_desktop_bounds(),
                 self.clock(),
                 notch_range=self.notch_range,
-                dragging=event_type != quartz.kCGEventMouseMoved,
+                # A drag of files or of a window crosses, and takes them with it.
+                dragging=dragging and not files and not window,
                 # Each display's own edges count where nothing lies beyond them, and Part of the
                 # edge measures its thirds along the pointer's display.
                 displays=self._current_displays(),
@@ -1140,6 +1181,10 @@ class KVMController:
                 offset = crossing.to_pc_offset(offset, self.cfg.crossing.get("pc_shift_pct", 0))
             if self.set_redirecting(True, edge=step.edge, offset=offset):
                 self._notify_crossing("cross", step)
+                if files:
+                    self._send_files(files)
+                elif window:
+                    self._carry_window(window)
                 return None
             return event
         if step.hold:
@@ -1149,6 +1194,88 @@ class KVMController:
         if step.pressure > 0:
             self._notify_crossing("tick" if step.tick else "pressure", step)
         return event
+
+    def _dragged_files(self):
+        """The files being dragged during this press, or None. The pasteboard is read at most
+        every DRAG_CHECK_SECONDS, and its file list only once it has changed since the press."""
+        if self.files_endpoint is None or self._press_drag_count is None:
+            return None
+        now = self.clock()
+        if self._drag_files is None and now - self._drag_checked_at >= DRAG_CHECK_SECONDS:
+            self._drag_checked_at = now
+            if self.file_drag.change_count() != self._press_drag_count:
+                self._drag_files = self.file_drag.file_paths()
+        return self._drag_files or None
+
+    def _dragged_window(self, x, y):
+        """The window being dragged during this press, or None: asked once, when the drag first
+        reaches the edge of the desktop, because Accessibility is too slow for every event."""
+        if self.files_endpoint is None or self._press_drag_count is None:
+            return None
+        if not self._window_checked:
+            left, top, right, bottom = self._current_desktop_bounds()
+            if min(x - left, y - top, right - 1 - x, bottom - 1 - y) <= EDGE_SLOP_PT:
+                self._window_checked = True
+                self._drag_window = self.dragged_window(x, y)
+        return self._drag_window
+
+    def _send_files(self, paths):
+        """Starts sending `paths` to the PC, and ends the drag here first: Escape cancels it, so
+        the button coming up later on the PC's side drops nothing on this Mac."""
+        self._press_drag_count = None
+        self._drag_files = None
+        name = os.path.basename(paths[0]) if len(paths) == 1 else f"{len(paths)} items"
+        self._enqueue_control({"type": protocol.MSG_GHOST, "data": {"title": name, "w": 200, "h": 120}})
+        endpoint = self.files_endpoint
+        threading.Thread(target=self._files_worker, args=(endpoint, list(paths)), name="Beamer-files", daemon=True).start()
+
+    def _files_worker(self, endpoint, paths, then=file_transfer.THEN_REVEAL, end_drag=True):
+        if end_drag:
+            try:
+                inject_key("esc", True)
+                inject_key("esc", False)
+            except Exception:
+                self.logger.exception("could not end the drag on this Mac")
+        try:
+            count = file_transfer.deliver(
+                self.socket_factory, endpoint, paths, then, CONNECT_TIMEOUT_SECONDS, FILES_IO_TIMEOUT_SECONDS
+            )
+            self.logger.info("sent %d file(s) to Windows", count)
+        except (OSError, protocol.ProtocolError, protocol.ConnectionClosed) as exc:
+            self.logger.warning("sending files to Windows failed: %s", exc)
+            self._alert("Beamer", f"The files did not reach Windows: {exc}")
+
+    def _carry_window(self, window):
+        """A window dragged across: its outline follows the pointer on the PC, and once its own
+        drag here is ended it goes as its page, its document, or live."""
+        self._press_drag_count = None
+        self._drag_window = None
+        _x, _y, w, h = window["frame"]
+        self._enqueue_control({"type": protocol.MSG_GHOST, "data": {"title": window["title"], "w": int(w), "h": int(h)}})
+        threading.Thread(target=self._carry_worker, args=(self.files_endpoint, window), name="Beamer-carry", daemon=True).start()
+
+    def _carry_worker(self, endpoint, window):
+        try:
+            # The window server is still moving the window with the button; this ends that here.
+            inject_mouse_button("left", False)
+        except Exception:
+            self.logger.exception("could not end the window drag on this Mac")
+        url = handoff.page_url(window)
+        if url:
+            self._enqueue_control({"type": protocol.MSG_OPEN, "data": {"url": url}})
+            handoff.minimise(window)
+            self.logger.info("carried a page to Windows")
+            return
+        path = handoff.document_path(window)
+        if path:
+            self._files_worker(endpoint, [path], file_transfer.THEN_OPEN, end_drag=False)
+            handoff.minimise(window)
+            return
+        if self.stream_ok:
+            handoff.move_on_screen(window, self._current_desktop_bounds())
+            stream_mac.Streamer(endpoint, window, self.socket_factory, self.logger, self._alert).start()
+            return
+        self.logger.info("the window has no page or file to carry, and Windows does not show live windows")
 
     def _current_desktop_bounds(self):
         now = self.clock()
@@ -1484,6 +1611,9 @@ class KVMController:
                 raise _HandshakeError(f"Windows rejected the connection: {error}")
             if welcome_data.get("version") != protocol.PROTOCOL_VERSION:
                 raise _HandshakeError(OLD_RECEIVER_STATUS)
+            # Not through the tunnel: it carries one connection.
+            self.files_endpoint = endpoint if welcome_data.get("files") and not fallback else None
+            self.stream_ok = bool(welcome_data.get("stream")) and self.files_endpoint is not None
             sock.settimeout(SOCKET_IO_TIMEOUT_SECONDS)
         except _HandshakeError as exc:
             self.redirecting = False

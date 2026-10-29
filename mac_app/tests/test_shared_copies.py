@@ -1,6 +1,6 @@
 """The files both apps share are kept byte-identical, not merely similar.
 
-`effects.py` and its `fx_*.py`, `ignored.py`, `pairing.py`, `protocol.py`, `receiver.py`, `return_edge.py`
+`effects.py` and its `fx_*.py`, `file_transfer.py`, `ignored.py`, `pairing.py`, `protocol.py`, `receiver.py`, `return_edge.py`
 and `wol.py` each exist once in mac_app
 and once in win_app because neither app can import across the other's
 directory -- both are packaged as self-contained bundles. Everything
@@ -22,7 +22,7 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(_TESTS_DIR))
 
 SHARED_MODULES = (
     "effects.py", "fx_ink.py", "fx_instrument.py", "fx_membrane.py", "fx_sparks.py", "fx_warp.py",
-    "ignored.py", "pairing.py", "protocol.py", "receiver.py", "return_edge.py", "updates.py", "wol.py",
+    "file_transfer.py", "ignored.py", "pairing.py", "protocol.py", "receiver.py", "return_edge.py", "updates.py", "wol.py",
 )
 SHARED_TESTS = (
     "pairing_vectors.json", "test_ignored.py", "test_pairing_cpace.py", "test_shared_copies.py", "test_switch_arrival.py",

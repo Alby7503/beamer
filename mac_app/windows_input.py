@@ -19,6 +19,7 @@ import threading
 import clipboard_mac
 import crossing
 import desktop_mac
+import file_drag
 import input_injector_mac
 import no_unlock
 import receiver
@@ -61,6 +62,10 @@ class WindowsInput:
             peer_name="PC",
             self_target="mac",
             peer_target="windows",
+            # Files dragged across from the PC, dropped on a Finder window or the Desktop.
+            files_folder=file_drag.FOLDER,
+            files_callback=file_drag.show,
+            drop_target=file_drag.drop_folder,
         )
         controller.send_peer_home = self.server.send_home
         # Pause crossing and the full-screen hold are about this screen: the PC's pointer does not

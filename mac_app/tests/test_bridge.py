@@ -1886,6 +1886,40 @@ class CrossingWiringTests(unittest.TestCase):
         self.assertIs(returned, event)
         self.assertFalse(self.controller.redirecting)
 
+    def _file_drag(self, count_after_press):
+        counts = iter([1, count_after_press])
+        self.controller.file_drag = types.SimpleNamespace(
+            change_count=lambda: next(counts, count_after_press), file_paths=lambda: ["/tmp/a.txt"]
+        )
+        self.controller.files_endpoint = ("pc", 24820, "token")
+        sent = []
+        self.controller._send_files = sent.append
+        press = {"location": (1700.0, 558.0)}
+        self.controller._event_tap_callback(None, FakeQuartz.kCGEventLeftMouseDown, press, None)
+        return sent
+
+    def test_a_drag_of_files_crosses_and_takes_them(self):
+        sent = self._file_drag(count_after_press=2)
+        self._push(10, event_type=FakeQuartz.kCGEventLeftMouseDragged)
+        self.assertTrue(self.controller.redirecting)
+        self.assertEqual(sent, [["/tmp/a.txt"]])
+
+    def test_a_drag_with_an_unchanged_drag_pasteboard_still_does_not_cross(self):
+        # The pasteboard keeps the last drag's files: they are not this drag's.
+        sent = self._file_drag(count_after_press=1)
+        self._push(10, event_type=FakeQuartz.kCGEventLeftMouseDragged)
+        self.assertFalse(self.controller.redirecting)
+        self.assertEqual(sent, [])
+
+    def test_a_window_dragged_by_its_title_crosses_and_is_carried(self):
+        self._file_drag(count_after_press=1)
+        carried = []
+        self.controller.dragged_window = lambda x, y: {"title": "Notes", "frame": (1500.0, 540.0, 400.0, 300.0)}
+        self.controller._carry_window = carried.append
+        self._push(10, event_type=FakeQuartz.kCGEventLeftMouseDragged)
+        self.assertTrue(self.controller.redirecting)
+        self.assertEqual([w["title"] for w in carried], ["Notes"])
+
     def test_a_mouse_button_resets_the_push(self):
         self._push(3)
         self.assertGreater(self.controller.crossing.pressure, 0)

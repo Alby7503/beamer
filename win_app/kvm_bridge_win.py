@@ -46,6 +46,7 @@ from app_config import (
 )
 import autostart_win
 import capture_win
+import carry_win
 import desktop_win
 import effects
 from diagram import ArrangementDiagram, PushStrip
@@ -251,6 +252,8 @@ class WindowsApplication(QWidget):
         self._last_seen_state: Optional[ServerState] = None
         self.glow: Optional[EdgeGlow] = None
         self.effects: Optional[EffectOverlay] = None
+        # Files and windows that cross with the pointer; see carry_win.
+        self.carry = carry_win.Carry()
         self.server = ReceiverServer(
             self._set_status,
             pressure_callback=lambda edge, pressure, crossed, part=None: self.bridge.pressure.emit(edge, pressure, crossed, part),
@@ -262,6 +265,13 @@ class WindowsApplication(QWidget):
             focus_callback=self.bridge.focus.emit,
             peer_callback=self.bridge.learned.emit,
             arrangement_callback=self.bridge.arrangement.emit,
+            # ponytail: ~/Downloads, not the Known Folder; a moved Downloads still gets one here.
+            files_folder=carry_win.FILES_FOLDER,
+            files_callback=self.carry.files_arrived,
+            drop_target=carry_win.drop_folder,
+            open_callback=self.carry.open_url,
+            ghost_callback=self.carry.ghost,
+            stream_callback=self.carry.stream,
         )
         # The second link, outwards: this PC's keyboard and mouse on the Mac.
         self.sender = MacSender(
@@ -274,6 +284,9 @@ class WindowsApplication(QWidget):
             ),
         )
         self.sender.send_peer_home = self.server.send_home
+        self.carry.sender = self.sender
+        self.sender.dragged_files = self.carry.dragged_files
+        self.sender.on_left_button = self.carry.left_button
         # Pause crossing and the full-screen hold are about this screen: the Mac's pointer does
         # not go home through a held edge either.
         self.server.edges_held = lambda: self.sender.edges_held

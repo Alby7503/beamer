@@ -29,6 +29,7 @@ import threading
 import time
 from typing import Callable, Optional
 
+import file_transfer
 import ignored
 import protocol
 import return_edge
@@ -223,6 +224,13 @@ class MacSender:
         self.full_screen_app = None
         # The buttons of this PC's own mouse that are down, so a push with one held is a drag.
         self._buttons_held = set()
+        # Files dragged against the edge cross with the pointer, to the (host, port, token) of a
+        # Mac whose welcome said it takes them. `dragged_files()` is the app's catcher: the files
+        # of the drag under way, or None. `on_left_button(down)` tells it, from the hook thread,
+        # when to put itself along the edge.
+        self.files_endpoint = None
+        self.dragged_files: Callable[[], Optional[list]] = lambda: None
+        self.on_left_button: Optional[Callable[[bool], None]] = None
         # (title, message) for a notification, and the Mac's hardware address when the ARP table
         # names a new one; both called off the GUI thread.
         self.on_alert = None
@@ -409,6 +417,12 @@ class MacSender:
                 self._buttons_held.add(name)
             else:
                 self._buttons_held.discard(name)
+            # Up always, so the catcher comes down after a drag that crossed with the button.
+            if name == "left" and self.on_left_button is not None and (not down or not self.redirecting):
+                try:
+                    self.on_left_button(down)
+                except Exception:
+                    LOGGER.exception("The file catcher could not follow the button")
         if not self.redirecting:
             return False
         if not self._link_live():
@@ -471,7 +485,8 @@ class MacSender:
         Mac's trackpad able to take the pointer back)."""
         if not self.connected or self.edges_held:
             return
-        if self._buttons_held and self._setting("block_while_dragging", True) and self._still_dragging():
+        files = self.dragged_files() if "left" in self._buttons_held and self.files_endpoint is not None else None
+        if not files and self._buttons_held and self._setting("block_while_dragging", True) and self._still_dragging():
             # A drag that reaches the edge is dragging, not leaving: the push so far is dropped,
             # as the Mac drops it, so letting go at the edge does not finish a crossing.
             for candidate in (self._corner_model, self._edge_model):
@@ -516,7 +531,30 @@ class MacSender:
                 self._receiving = False
             # The model names the edge on the far side, not the one just left:
             # it is the same border, read from the other end.
-            self.set_redirecting(True, arrival_edge=outcome.edge, offset=outcome.offset)
+            if self.set_redirecting(True, arrival_edge=outcome.edge, offset=outcome.offset) and files:
+                self._send_files(files)
+
+    def _send_files(self, paths) -> None:
+        """Sends files that crossed with the pointer, ending their drag here first: Escape cancels
+        it, so the button coming up on the Mac drops nothing on this PC."""
+        endpoint = self.files_endpoint
+
+        def deliver():
+            try:
+                import input_injector
+
+                input_injector.inject_key("esc", True)
+                input_injector.inject_key("esc", False)
+            except Exception:
+                LOGGER.exception("Could not end the drag on this PC")
+            try:
+                count = file_transfer.deliver(self._socket_factory, endpoint, list(paths))
+                LOGGER.info("sent %d file(s) to the Mac", count)
+            except (OSError, protocol.ProtocolError, protocol.ConnectionClosed) as exc:
+                LOGGER.warning("sending files to the Mac failed: %s", exc)
+                self._alert(f"The files did not reach the Mac: {exc}")
+
+        threading.Thread(target=deliver, name="Beamer-files", daemon=True).start()
 
     def _still_dragging(self) -> bool:
         """A release the hook never saw -- let go over the secure desktop or an elevated window --
@@ -691,6 +729,7 @@ class MacSender:
                 raise protocol.ProtocolError("welcome message missing data")
             if data.get("error") or data.get("version") != protocol.PROTOCOL_VERSION:
                 raise HandshakeError(OLD_RECEIVER_STATUS)
+            self.files_endpoint = (host, port, config.auth_token) if data.get("files") else None
             sock.settimeout(SOCKET_IO_TIMEOUT_SECONDS)
         except HandshakeError as exc:
             self._close(sock)

@@ -9,6 +9,7 @@ import time
 from enum import Enum
 from typing import Callable, Optional, Tuple
 
+import file_transfer
 import return_edge as crossing
 import protocol
 
@@ -39,6 +40,14 @@ BIND_RETRY_SECONDS = 5.0
 # so a stranger holding these slots loses them within seconds, while the real peer's handshake
 # takes milliseconds and always finds one free.
 MAX_PENDING_CONNECTIONS = 4
+# A file connection streams without pings, so a gap this long mid-file means the sender is gone.
+FILES_READ_TIMEOUT_SECONDS = 30.0
+# How long files that crossed with the button down wait for it to come up before they stay put.
+DROP_WAIT_SECONDS = 30.0
+EARLY_DROP_SECONDS = 3.0
+# A live window from the peer, on a connection of its own; see stream_view and the Mac's stream.
+STREAM_CHANNEL = "stream"
+STREAM_READ_TIMEOUT_SECONDS = 10.0
 
 
 class ServerState(Enum):
@@ -163,6 +172,12 @@ class ReceiverServer:
         peer_name: str = "Mac",
         self_target: str = "windows",
         peer_target: str = "mac",
+        files_folder: Optional[str] = None,
+        files_callback: Optional[Callable[[list, str], None]] = None,
+        drop_target: Optional[Callable[[], Optional[str]]] = None,
+        open_callback: Optional[Callable[[str], None]] = None,
+        ghost_callback: Optional[Callable[[Optional[dict]], None]] = None,
+        stream_callback: Optional[Callable[[socket.socket, object, dict], None]] = None,
     ) -> None:
         # One module serves both machines: this file is byte-identical in
         # win_app and mac_app, which test_receiver_parity enforces. Everything
@@ -212,6 +227,27 @@ class ReceiverServer:
         # switch instead. It is how the owner plays its arrival effect; the
         # owner marshals it.
         self._arrival_callback = arrival_callback
+        # Files the peer drags across land in `files_folder`, and `files_callback(paths, then)`
+        # fires on their connection's thread once they have, one path per item dragged, with the
+        # sender's file_transfer.THEN_*. Without a folder this receiver does not say it takes
+        # files, so the peer never sends any. `drop_target()` names the folder of the window
+        # under the pointer, or None, asked when the button comes up after files crossed: they
+        # are moved there. `open_callback(url)` opens a page a carried window showed;
+        # `ghost_callback(data)` shows a carried window's outline under the pointer, and is called
+        # with None when the button comes up. `stream_callback(connection, session, hello)` owns a
+        # live window's connection until it returns; without one, no stream is offered.
+        self._files_folder = files_folder
+        self._files_callback = files_callback
+        self._drop_target = drop_target
+        self._open_callback = open_callback
+        self._ghost_callback = ghost_callback
+        self._stream_callback = stream_callback
+        # {"event", "folder"} while files that crossed wait to learn where the button came up.
+        self._drop: Optional[dict] = None
+        # When the left button last came up with no files waiting: a quick release can beat the
+        # file connection here, and still names where they were dropped.
+        self._left_up_at = float("-inf")
+        self._ghost_shown = False
         self._self_name = self_name
         self._peer_name = peer_name
         self._self_target = self_target
@@ -478,6 +514,13 @@ class ReceiverServer:
         if handshake is None:
             return
         session, version, hello = handshake
+        if hello.get("channel") == file_transfer.CHANNEL:
+            # Its own connection, never the input link: it supersedes nothing.
+            self._receive_files(connection, session, peer, version, hello)
+            return
+        if hello.get("channel") == STREAM_CHANNEL:
+            self._receive_stream(connection, session, peer, version, hello)
+            return
         self._clipboard_module().forget_sync()
 
         if version != protocol.PROTOCOL_VERSION:
@@ -496,7 +539,7 @@ class ReceiverServer:
         connection.settimeout(SESSION_READ_TIMEOUT_SECONDS)
         connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         sequence = ProcessedSequence()
-        if not self._send_message(connection, session, protocol.welcome_msg()):
+        if not self._send_message(connection, session, protocol.welcome_msg(files=self._files_folder is not None, stream=self._stream_callback is not None)):
             return
 
         with self._lock:
@@ -570,6 +613,15 @@ class ReceiverServer:
                     # Never recorded or acked as an input event, like ping.
                     self._handle_arrangement(message)
                     continue
+                if message_type in (protocol.MSG_OPEN, protocol.MSG_GHOST):
+                    # Never recorded or acked as an input event, like ping.
+                    self._handle_carry(message_type, message.get("data"))
+                    continue
+                if message_type == protocol.MSG_MOUSEUP and (message.get("data") or {}).get("button") == "left":
+                    self._dropped()
+                    if self._ghost_shown and self._ghost_callback is not None:
+                        self._ghost_shown = False
+                        self._handle_carry_end()
                 if self._unlocking.is_set():
                     # Dropped, not queued: see _begin_unlock. Still recorded so
                     # the ACK sequence stays continuous and the Mac's watchdog
@@ -611,6 +663,95 @@ class ReceiverServer:
             # current-generation session may flip status to WAITING.
             if is_current and not server_stop.is_set():
                 self._set_status(ServerState.WAITING, f"Waiting on port {config.port}")
+
+    def _receive_files(self, connection: socket.socket, session, peer: str, version, hello: dict) -> None:
+        if self._files_folder is None or version != protocol.PROTOCOL_VERSION:
+            LOGGER.warning("Refusing files from %s: this receiver does not take them", peer)
+            return
+        then = file_transfer.THEN_OPEN if hello.get("then") == file_transfer.THEN_OPEN else file_transfer.THEN_REVEAL
+        drop = None
+        if then == file_transfer.THEN_REVEAL and self._drop_target is not None:
+            drop = {"event": threading.Event(), "folder": None}
+            with self._lock:
+                self._drop = drop
+                already_up = time.monotonic() - self._left_up_at < EARLY_DROP_SECONDS
+            if already_up:
+                self._dropped()
+        connection.settimeout(FILES_READ_TIMEOUT_SECONDS)
+        try:
+            if not self._send_message(connection, session, protocol.welcome_msg(files=True)):
+                return
+            try:
+                landed = file_transfer.receive(connection, session, self._files_folder)
+            except (OSError, protocol.ProtocolError, protocol.ConnectionClosed) as exc:
+                LOGGER.warning("Files from %s broke off: %s", peer, exc)
+                return
+            LOGGER.info("%d item(s) from %s landed in %s", len(landed), peer, self._files_folder)
+            if drop is not None and drop["event"].wait(DROP_WAIT_SECONDS) and drop["folder"]:
+                landed = file_transfer.move_into(landed, drop["folder"])
+                LOGGER.info("Moved them into %s, where they were dropped", drop["folder"])
+        finally:
+            with self._lock:
+                if self._drop is drop:
+                    self._drop = None
+        if landed and self._files_callback is not None:
+            try:
+                self._files_callback(landed, then)
+            except Exception:
+                LOGGER.exception("Showing the files that arrived failed")
+
+    def _handle_carry_end(self) -> None:
+        try:
+            self._ghost_callback(None)
+        except Exception:
+            LOGGER.exception("A carried window's outline could not be hidden")
+
+    def _dropped(self) -> None:
+        """The button came up here: files that crossed with it learn the folder it came up over,
+        asked off the session thread because finding it can take a moment."""
+        with self._lock:
+            drop, self._drop = self._drop, None
+            if drop is None:
+                self._left_up_at = time.monotonic()
+                return
+
+        def find():
+            try:
+                drop["folder"] = self._drop_target()
+            except Exception:
+                LOGGER.exception("Could not tell which folder the files were dropped on")
+            drop["event"].set()
+
+        threading.Thread(target=find, name="Beamer-drop", daemon=True).start()
+
+    def _receive_stream(self, connection: socket.socket, session, peer: str, version, hello: dict) -> None:
+        if self._stream_callback is None or version != protocol.PROTOCOL_VERSION:
+            LOGGER.warning("Refusing a window from %s: this receiver does not show them", peer)
+            return
+        connection.settimeout(STREAM_READ_TIMEOUT_SECONDS)
+        connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        if not self._send_message(connection, session, protocol.welcome_msg(stream=True)):
+            return
+        if self._ghost_shown:
+            self._ghost_shown = False
+            self._handle_carry_end()
+        try:
+            self._stream_callback(connection, session, hello)
+        except Exception:
+            LOGGER.exception("The window from %s stopped", peer)
+
+    def _handle_carry(self, message_type: str, data) -> None:
+        data = data if isinstance(data, dict) else {}
+        try:
+            if message_type == protocol.MSG_OPEN:
+                url = data.get("url")
+                if self._open_callback is not None and isinstance(url, str) and url.startswith(("http://", "https://")):
+                    self._open_callback(url)
+            elif self._ghost_callback is not None:
+                self._ghost_shown = True
+                self._ghost_callback(data)
+        except Exception:
+            LOGGER.exception("A carried window could not be shown")
 
     def _is_current_session(self, generation: int) -> bool:
         with self._lock:

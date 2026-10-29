@@ -24,12 +24,15 @@ setup(
         "desktop_mac",
         "effects",
         "effects_overlay",
+        "file_drag",
+        "file_transfer",
         "fx_ink",
         "fx_instrument",
         "fx_membrane",
         "fx_sparks",
         "fx_warp",
         "gestures",
+        "handoff",
         "ignored",
         "input_injector_mac",
         "key_codes",
@@ -46,6 +49,7 @@ setup(
         "receiver",
         "return_edge",
         "settings_store",
+        "stream_mac",
         "theme",
         "tokens",
         "wake",
@@ -74,7 +78,7 @@ setup(
             # effects.py imports its fx_* modules by name at first use, which py2app's import scan
             # cannot see, so they are named here or the bundle ships without a single effect.
             "includes": [
-                "objc", "AppKit", "ApplicationServices", "Quartz",
+                "objc", "AppKit", "ApplicationServices", "Quartz", "CoreMedia", "ScreenCaptureKit",
                 "fx_ink", "fx_instrument", "fx_membrane", "fx_sparks", "fx_warp",
             ],
             "iconfile": "../Beamer.icns",
@@ -90,6 +94,7 @@ setup(
                 "NSPrincipalClass": "NSApplication",
                 "ATSApplicationFontsPath": "Fonts",
                 "NSHumanReadableCopyright": "Copyright 2026 Toby Kalkman",
+                "NSAppleEventsUsageDescription": "Beamer asks your browser for the page a window shows, and Finder for the folder you drop files on, when you drag them across to the PC.",
                 "NSLocalNetworkUsageDescription": "Beamer needs to reach the Windows PC on your local network to forward keyboard and mouse input.",
             },
         }
