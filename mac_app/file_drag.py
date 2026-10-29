@@ -8,6 +8,8 @@ changed after the button went down: see KVMController._dragged_files.
 import os
 import subprocess
 
+import file_transfer
+
 try:
     import AppKit
 except ImportError:  # pragma: no cover - only off a Mac
@@ -84,7 +86,7 @@ def show(paths, then):
         return
     workspace = AppKit.NSWorkspace.sharedWorkspace()
     urls = [AppKit.NSURL.fileURLWithPath_(path) for path in paths]
-    if then == "open":
+    if then == "open" and all(file_transfer.safe_to_open(path) for path in paths):
         for url in urls:
             workspace.openURL_(url)
     else:

@@ -298,6 +298,9 @@ class Streamer:
         if kind == "key":
             name, down = data.get("name"), bool(data.get("down"))
             if isinstance(name, str) and name:
+                if down:
+                    # Keys go to whatever is in front: make sure that is still the streamed window's app.
+                    self._activate()
                 input_injector_mac.inject_key(name, down)
             return None
         point = self.point(data)

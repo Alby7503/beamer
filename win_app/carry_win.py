@@ -54,7 +54,7 @@ _MODIFIERS = {"cmd", "alt", "ctrl", "shift"}
 def show_files(paths, then) -> None:
     """Opens files carried as a window's document; shows the rest in Explorer, the first selected."""
     try:
-        if then == file_transfer.THEN_OPEN:
+        if then == file_transfer.THEN_OPEN and all(file_transfer.safe_to_open(path) for path in paths):
             for path in paths:
                 os.startfile(path)
         else:

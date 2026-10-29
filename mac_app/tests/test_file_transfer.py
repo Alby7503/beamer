@@ -51,6 +51,14 @@ class FileTransferTests(unittest.TestCase):
                 file_transfer.clean_name(name)
         self.assertEqual(file_transfer.clean_name("con.txt"), ["_con.txt"])
 
+    def test_only_inert_files_are_opened(self):
+        with tempfile.TemporaryDirectory() as folder:
+            for name, expected in (("report.pdf", True), ("Photo.JPG", True), ("setup.EXE", False), ("run.command", False), ("go.lnk", False), ("page.html", False), ("noext", False)):
+                path = os.path.join(folder, name)
+                open(path, "w").close()
+                self.assertEqual(file_transfer.safe_to_open(path), expected, name)
+            self.assertFalse(file_transfer.safe_to_open(folder))
+
 
 if __name__ == "__main__":
     unittest.main()

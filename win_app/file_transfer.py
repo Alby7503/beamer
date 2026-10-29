@@ -75,6 +75,22 @@ def send(sock, session, paths) -> int:
     return count
 
 
+# The types a carried document is opened as on arrival: everyday documents, pictures and media,
+# none of which runs code when opened. Anything else, an unknown type or none, is shown in
+# Explorer or Finder instead, whatever the other machine asked.
+_OPENS_INERT = {
+    ".pdf", ".txt", ".md", ".rtf", ".csv", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
+    ".odt", ".ods", ".odp", ".pages", ".numbers", ".key",
+    ".png", ".jpg", ".jpeg", ".gif", ".heic", ".webp", ".tif", ".tiff", ".bmp",
+    ".mp3", ".m4a", ".wav", ".mp4", ".mov",
+}
+
+
+def safe_to_open(path: str) -> bool:
+    """Whether a received file may be opened rather than shown: a file of an inert type."""
+    return os.path.isfile(path) and os.path.splitext(path)[1].lower() in _OPENS_INERT
+
+
 def deliver(socket_factory, endpoint, paths, then=THEN_REVEAL, connect_timeout=1.0, io_timeout=30.0) -> int:
     """Opens a file connection to `endpoint` (host, port, token), sends `paths` and closes it.
     Answers how many files went; raises OSError or ProtocolError when they did not."""
