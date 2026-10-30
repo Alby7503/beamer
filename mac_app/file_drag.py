@@ -91,3 +91,9 @@ def show(paths, then):
             workspace.openURL_(url)
     else:
         workspace.activateFileViewerSelectingURLs_(urls)
+
+
+def open_url(url):
+    """Opens a page a window from the PC was showing."""
+    if AppKit is not None:
+        AppKit.NSWorkspace.sharedWorkspace().openURL_(AppKit.NSURL.URLWithString_(url))

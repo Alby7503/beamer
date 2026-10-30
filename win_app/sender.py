@@ -230,6 +230,12 @@ class MacSender:
         # when to put itself along the edge.
         self.files_endpoint = None
         self.dragged_files: Callable[[], Optional[list]] = lambda: None
+        # A window dragged by its title bar against the edge crosses too: `dragged_window()` is
+        # the app's reading of it (or None), and `on_carry_window(window)` carries it once the
+        # pointer is through. `stream_ok` is whether the Mac's welcome said it shows live windows.
+        self.dragged_window: Callable[[], Optional[dict]] = lambda: None
+        self.on_carry_window: Optional[Callable[[dict], None]] = None
+        self.stream_ok = False
         self.on_left_button: Optional[Callable[[bool], None]] = None
         # (title, message) for a notification, and the Mac's hardware address when the ARP table
         # names a new one; both called off the GUI thread.
@@ -484,8 +490,11 @@ class MacSender:
         Mac's trackpad able to take the pointer back)."""
         if not self.connected or self.edges_held:
             return
-        files = self.dragged_files() if "left" in self._buttons_held and self.files_endpoint is not None else None
-        if not files and self._buttons_held and self._setting("block_while_dragging", True) and self._still_dragging():
+        files = window = None
+        if "left" in self._buttons_held and self.files_endpoint is not None:
+            files = self.dragged_files()
+            window = None if files else self.dragged_window()
+        if not files and not window and self._buttons_held and self._setting("block_while_dragging", True) and self._still_dragging():
             # A drag that reaches the edge is dragging, not leaving: the push so far is dropped,
             # as the Mac drops it, so letting go at the edge does not finish a crossing.
             for candidate in (self._corner_model, self._edge_model):
@@ -530,8 +539,11 @@ class MacSender:
                 self._receiving = False
             # The model names the edge on the far side, not the one just left:
             # it is the same border, read from the other end.
-            if self.set_redirecting(True, arrival_edge=outcome.edge, offset=outcome.offset) and files:
-                self._send_files(files)
+            if self.set_redirecting(True, arrival_edge=outcome.edge, offset=outcome.offset):
+                if files:
+                    self._send_files(files)
+                elif window and self.on_carry_window is not None:
+                    self.on_carry_window(window)
 
     def _send_files(self, paths) -> None:
         """Sends files that crossed with the pointer, ending their drag here first: Escape cancels
@@ -729,6 +741,7 @@ class MacSender:
             if data.get("error") or data.get("version") != protocol.PROTOCOL_VERSION:
                 raise HandshakeError(OLD_RECEIVER_STATUS)
             self.files_endpoint = (host, port, config.auth_token) if data.get("files") else None
+            self.stream_ok = bool(data.get("stream")) and self.files_endpoint is not None
             sock.settimeout(SOCKET_IO_TIMEOUT_SECONDS)
         except HandshakeError as exc:
             self._close(sock)
@@ -1034,6 +1047,10 @@ class MacSender:
             self._outbound.put_nowait(message)
         except queue.Full:
             self._force_local("the outbound queue to the Mac filled up")
+
+    def send_open(self, url: str) -> None:
+        """Asks the Mac to open `url`, a page carried across in its window."""
+        self._enqueue_control({"type": protocol.MSG_OPEN, "data": {"url": url}})
 
     def _enqueue_control(self, message) -> None:
         try:

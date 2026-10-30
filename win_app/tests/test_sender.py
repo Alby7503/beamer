@@ -68,6 +68,17 @@ class EdgeTests(unittest.TestCase):
         self.assertTrue(sender_.redirecting)
         self.assertEqual(sent, [["C:\\a.txt"]])
 
+    def test_a_window_dragged_by_its_title_crosses_and_is_carried(self):
+        sender_ = self.link.sender
+        carried = []
+        sender_.on_carry_window = carried.append
+        sender_.files_endpoint = ("127.0.0.1", 1, "shared-token")
+        sender_._buttons_held = {"left"}
+        sender_.dragged_window = lambda: {"hwnd": 7, "title": "Notepad"}
+        self.push(6)
+        self.assertTrue(sender_.redirecting)
+        self.assertEqual([w["title"] for w in carried], ["Notepad"])
+
     def test_the_push_lights_the_edge_it_is_pressing(self):
         # The app once built its sender with no pressure callback, so the PC's own push out to
         # the Mac crossed in the dark while the same edge lit for the Mac's push home.

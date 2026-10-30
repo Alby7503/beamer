@@ -50,6 +50,7 @@ setup(
         "return_edge",
         "settings_store",
         "stream_mac",
+        "stream_view_mac",
         "theme",
         "tokens",
         "wake",

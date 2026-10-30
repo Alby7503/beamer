@@ -47,6 +47,7 @@ from app_config import (
 import autostart_win
 import capture_win
 import carry_win
+import stream_win
 import desktop_win
 import effects
 from diagram import ArrangementDiagram, PushStrip
@@ -272,6 +273,7 @@ class WindowsApplication(QWidget):
             open_callback=self.carry.open_url,
             ghost_callback=self.carry.ghost,
             stream_callback=self.carry.stream,
+            carry_out=self.carry.carry_out,
         )
         # The second link, outwards: this PC's keyboard and mouse on the Mac.
         self.sender = MacSender(
@@ -287,6 +289,8 @@ class WindowsApplication(QWidget):
         self.carry.sender = self.sender
         self.sender.dragged_files = self.carry.dragged_files
         self.sender.on_left_button = self._on_left_button
+        self.sender.dragged_window = stream_win.dragged_window
+        self.sender.on_carry_window = self.carry.carry_window
         # Pause crossing and the full-screen hold are about this screen: the Mac's pointer does
         # not go home through a held edge either.
         self.server.edges_held = lambda: self.sender.edges_held

@@ -27,6 +27,7 @@ from PySide6.QtWidgets import QWidget
 
 import file_transfer
 import protocol
+import stream_win
 
 LOGGER = logging.getLogger(__name__)
 
@@ -337,6 +338,37 @@ class Carry(QObject):
         else:
             self.catcher.hide()
             self.catcher.files = None
+
+    # -- windows leaving this PC ---------------------------------------------------------------
+
+    def carry_window(self, window) -> None:
+        """A window dragged across to the Mac: its page opens there, or it streams. Called on the
+        hook or session thread, so the work goes to a thread of its own."""
+        threading.Thread(target=self._carry_worker, args=(window,), name="Beamer-carry", daemon=True).start()
+
+    def _carry_worker(self, window) -> None:
+        sender = self.sender
+        try:
+            stream_win.end_move()
+        except Exception:
+            LOGGER.exception("Could not end the window's move on this PC")
+        url = stream_win.page_url(window)
+        if url:
+            sender.send_open(url)
+            stream_win.minimise(window)
+            LOGGER.info("carried a page to the Mac")
+        elif sender.stream_ok and sender.files_endpoint is not None:
+            stream_win.Streamer(sender.files_endpoint, window, sender._socket_factory, sender._alert).start()
+        else:
+            LOGGER.info("the window has no page to carry, and the Mac does not show live windows")
+
+    def carry_out(self, moment: str) -> None:
+        """The receiver's hook for the Mac's pointer driving this PC: a PC window it drags home
+        through the edge goes with it, as one this PC's own mouse drags does."""
+        if moment == "cross" and self.sender is not None and self.sender.files_endpoint is not None:
+            window = stream_win.dragged_window()
+            if window:
+                self.carry_window(window)
 
     # -- the receiver's: what arrives from the Mac --------------------------------------------
 

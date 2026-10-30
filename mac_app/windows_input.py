@@ -20,6 +20,7 @@ import clipboard_mac
 import crossing
 import desktop_mac
 import file_drag
+import stream_view_mac
 import input_injector_mac
 import no_unlock
 import receiver
@@ -68,6 +69,9 @@ class WindowsInput:
             drop_target=file_drag.drop_folder,
             # The PC's pointer dragging files or a window here back home takes them along.
             carry_out=controller.carry_out,
+            # A PC window carried across: its page opens here, or it shows here live.
+            open_callback=file_drag.open_url,
+            stream_callback=stream_view_mac.show,
         )
         controller.send_peer_home = self.server.send_home
         # Pause crossing and the full-screen hold are about this screen: the PC's pointer does not
