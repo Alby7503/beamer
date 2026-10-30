@@ -315,6 +315,10 @@ class Carry(QObject):
         self.catcher = Catcher()
         self.ghost_window = Ghost()
         self.views = []
+        try:
+            stream_win.watch_moves()
+        except Exception:
+            LOGGER.exception("Could not listen for window moves; PC windows will not cross to the Mac")
         self._left.connect(self._on_left)
         self._files.connect(show_files)
         self._open.connect(lambda url: QDesktopServices.openUrl(QUrl(url)))
@@ -324,6 +328,9 @@ class Carry(QObject):
     # -- the sender's: files leaving this PC --------------------------------------------------
 
     def left_button(self, down: bool) -> None:
+        if not down:
+            # Every move ends with the button; a lost end event must not carry a window later.
+            stream_win._moving["hwnd"] = None
         self._left.emit(down)
 
     def dragged_files(self):

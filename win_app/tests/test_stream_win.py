@@ -11,12 +11,19 @@ class StreamWinTests(unittest.TestCase):
         for text in ("", "search words here", "file:///C:/x", "localhost", "javascript:alert(1)", "user@evil.com/x", "https://a@b.com/"):
             self.assertIsNone(stream_win.as_url(text), text)
 
-    def test_only_the_title_band_counts_as_dragging_the_window(self):
-        rect = (100, 50, 800, 600)
-        self.assertTrue(stream_win.in_title_band(rect, 400, 60))
-        self.assertFalse(stream_win.in_title_band(rect, 400, 50 + stream_win.TITLE_BAND_PX))
-        self.assertTrue(stream_win.in_title_band((1469, 551, 1047, 684), 2533, 610), "the PC test's own reading")
-        self.assertFalse(stream_win.in_title_band(rect, 100 + 800 + stream_win.TITLE_BAND_PX, 60))
+    def test_a_window_counts_as_moving_from_windows_own_events_and_never_while_resized(self):
+        start, end = stream_win.EVENT_SYSTEM_MOVESIZESTART, stream_win.EVENT_SYSTEM_MOVESIZEEND
+        stream_win.on_move_event(start, 42, 2)  # HTCAPTION
+        self.assertEqual(stream_win._moving["hwnd"], 42)
+        stream_win.on_move_event(end, 7, None)
+        self.assertEqual(stream_win._moving["hwnd"], 42, "another window's end leaves this move alone")
+        stream_win.on_move_event(end, 42, None)
+        self.assertIsNone(stream_win._moving["hwnd"])
+        stream_win.on_move_event(start, 42, 11)  # HTRIGHT: a resize
+        self.assertIsNone(stream_win._moving["hwnd"])
+        stream_win.on_move_event(start, 42, None)  # no answer: taken as a move
+        self.assertEqual(stream_win._moving["hwnd"], 42)
+        stream_win.on_move_event(end, 42, None)
 
     def test_the_macs_fractions_land_inside_the_window(self):
         streamer = stream_win.Streamer(None, {"hwnd": 1, "title": "", "rect": (100, 50, 401, 201)}, None, None)

@@ -34,9 +34,16 @@ FRAMES_PER_SECOND = 15
 JPEG_QUALITY = 60
 CONNECT_TIMEOUT_SECONDS = 1.0
 IO_TIMEOUT_SECONDS = 10.0
-# The strip along a window's top, in pixels, that a pointer must be in for its drag to be the
-# window's own: a title bar, or a browser's tab strip.
-TITLE_BAND_PX = 64
+# Windows says when a window starts and stops being moved or sized; a move is one begun anywhere
+# but on a sizing border, as the window itself answers WM_NCHITTEST.
+EVENT_SYSTEM_MOVESIZESTART = 0x000A
+EVENT_SYSTEM_MOVESIZEEND = 0x000B
+WINEVENT_OUTOFCONTEXT = 0
+OBJID_WINDOW = 0
+WM_NCHITTEST = 0x0084
+HT_SIZING = range(10, 18)  # HTLEFT .. HTBOTTOMRIGHT
+SMTO_ABORTIFHUNG = 2
+HIT_TEST_TIMEOUT_MS = 50
 BROWSERS = {"msedge", "chrome", "brave", "firefox", "vivaldi", "opera"}
 _SHELL_CLASSES = {"Progman", "WorkerW", "Shell_TrayWnd", "Shell_SecondaryTrayWnd"}
 _NO_WINDOW = 0x08000000
@@ -68,16 +75,11 @@ def _rect(hwnd):
     return rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top
 
 
-def in_title_band(rect, x, y) -> bool:
-    """Whether (x, y) is on the window's title bar. The sides allow a band's width beyond the
-    window: Windows stops a dragged window at the screen's edge while the pointer goes on, and the
-    first PC test had it 17 px past the window when it reached the edge."""
-    left, top, width, _height = rect
-    return left - TITLE_BAND_PX <= x < left + width + TITLE_BAND_PX and top <= y < top + TITLE_BAND_PX
-
-
 # Why the last dragged_window() answered None, for the log line a drag stopped at the edge writes.
-last_refusal = ""
+last_refusal = "no window has been moved since Beamer started"
+# The window Windows is moving right now, from its own move events; see watch_moves.
+_moving = {"hwnd": None}
+_hook = {}
 
 
 def _refuse(why):
@@ -86,27 +88,88 @@ def _refuse(why):
     return None
 
 
+def is_move(hit) -> bool:
+    """Whether a WM_NCHITTEST answer, or None for none, starts a move rather than a resize."""
+    return hit not in HT_SIZING
+
+
+def on_move_event(event, hwnd, hit) -> None:
+    """One of Windows' move/size events for a top-level window: `hit` is what it answered for the
+    pointer when it began, or None."""
+    if event == EVENT_SYSTEM_MOVESIZESTART:
+        _moving["hwnd"] = int(hwnd) if is_move(hit) else None
+        if not is_move(hit):
+            _refuse("the window under the pointer is being resized, not moved")
+    elif event == EVENT_SYSTEM_MOVESIZEEND and _moving["hwnd"] == int(hwnd or 0):
+        _moving["hwnd"] = None
+
+
+def _hit_test(hwnd):
+    user32 = _user32()
+    point = ctypes.wintypes.POINT()
+    user32.GetCursorPos(ctypes.byref(point))
+    packed = ((point.y & 0xFFFF) << 16) | (point.x & 0xFFFF)
+    result = ctypes.c_size_t(0)
+    if not user32.SendMessageTimeoutW(
+        ctypes.wintypes.HWND(hwnd), WM_NCHITTEST, 0, packed, SMTO_ABORTIFHUNG, HIT_TEST_TIMEOUT_MS, ctypes.byref(result)
+    ):
+        return None
+    return ctypes.c_long(result.value).value
+
+
+def watch_moves() -> None:
+    """Listens for Windows' move events. Called once, on the GUI thread, whose message loop
+    delivers them; the hook and its callback are kept alive here."""
+    if _hook:
+        return
+    callback_type = ctypes.WINFUNCTYPE(
+        None, ctypes.wintypes.HANDLE, ctypes.wintypes.DWORD, ctypes.wintypes.HWND,
+        ctypes.wintypes.LONG, ctypes.wintypes.LONG, ctypes.wintypes.DWORD, ctypes.wintypes.DWORD,
+    )
+
+    def callback(_hook_handle, event, hwnd, obj, _child, _thread, _time):
+        try:
+            if obj == OBJID_WINDOW and hwnd:
+                on_move_event(event, hwnd, _hit_test(hwnd) if event == EVENT_SYSTEM_MOVESIZESTART else None)
+        except Exception:
+            LOGGER.exception("A window move event could not be read")
+
+    user32 = _user32()
+    user32.SetWinEventHook.restype = ctypes.wintypes.HANDLE
+    user32.SetWinEventHook.argtypes = [
+        ctypes.wintypes.DWORD, ctypes.wintypes.DWORD, ctypes.wintypes.HMODULE, callback_type,
+        ctypes.wintypes.DWORD, ctypes.wintypes.DWORD, ctypes.wintypes.DWORD,
+    ]
+    _hook["callback"] = callback_type(callback)
+    _hook["handle"] = user32.SetWinEventHook(
+        EVENT_SYSTEM_MOVESIZESTART, EVENT_SYSTEM_MOVESIZEEND, None, _hook["callback"], 0, 0, WINEVENT_OUTOFCONTEXT
+    )
+    if not _hook["handle"]:
+        LOGGER.warning("Windows refused the move-event hook; PC windows will not cross to the Mac")
+
+
 def dragged_window():
-    """The foreground window when the pointer is in its title band, which is what a window being
-    dragged looks like, as a dict; None otherwise. On the hook thread, so only cheap calls."""
+    """The window Windows is moving right now, as a dict, or None. Not guessed from where the
+    pointer is: a title bar's height follows the display's scaling, and Snap resizes the window
+    under the pointer, which left the first guesses wrong. On the hook thread, so only cheap calls."""
     try:
+        hwnd = _moving["hwnd"]
+        if hwnd is None:
+            return _refuse("Windows reported no window being moved")
         user32 = _user32()
-        hwnd = user32.GetForegroundWindow()
-        if not hwnd:
-            return _refuse("no foreground window")
+        if not user32.IsWindow(ctypes.wintypes.HWND(hwnd)):
+            return _refuse("the moved window has gone")
         pid = ctypes.wintypes.DWORD()
         user32.GetWindowThreadProcessId(ctypes.wintypes.HWND(hwnd), ctypes.byref(pid))
         if pid.value == os.getpid():
-            return _refuse("the foreground window is Beamer's")
+            return _refuse("the window being moved is Beamer's")
         name = ctypes.create_unicode_buffer(256)
         user32.GetClassNameW(ctypes.wintypes.HWND(hwnd), name, 256)
         if name.value in _SHELL_CLASSES:
-            return _refuse(f"the foreground window is the shell's ({name.value})")
+            return _refuse(f"the window being moved is the shell's ({name.value})")
         rect = _rect(hwnd)
-        point = ctypes.wintypes.POINT()
-        user32.GetCursorPos(ctypes.byref(point))
-        if rect is None or not in_title_band(rect, point.x, point.y):
-            return _refuse(f"pointer {point.x},{point.y} is not in the title band of {name.value} at {rect}")
+        if rect is None:
+            return _refuse("the moved window has no frame")
         title = ctypes.create_unicode_buffer(512)
         user32.GetWindowTextW(ctypes.wintypes.HWND(hwnd), title, 512)
         return {"hwnd": int(hwnd), "pid": int(pid.value), "title": title.value or "Window", "rect": rect}
