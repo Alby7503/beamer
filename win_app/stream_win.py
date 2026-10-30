@@ -19,6 +19,7 @@ import ctypes
 import ctypes.wintypes
 import logging
 import os
+import re
 import subprocess
 import threading
 import time
@@ -39,6 +40,10 @@ TITLE_BAND_PX = 64
 BROWSERS = {"msedge", "chrome", "brave", "firefox", "vivaldi", "opera"}
 _SHELL_CLASSES = {"Progman", "WorkerW", "Shell_TrayWnd", "Shell_SecondaryTrayWnd"}
 _NO_WINDOW = 0x08000000
+# By its full path, as firewall_win starts it: a powershell.exe earlier on the PATH is not run.
+POWERSHELL = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
+# A host an address bar may show: letters, digits, hyphens and dots, an optional port, no userinfo.
+_HOST = re.compile(r"^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+(:\d{1,5})?$")
 SW_MINIMIZE = 6
 PW_RENDERFULLCONTENT = 2
 
@@ -117,7 +122,7 @@ def page_url(window):
         return None
     try:
         out = subprocess.run(
-            ["powershell", "-NoProfile", "-Command", _URL_SCRIPT % window["hwnd"]],
+            [POWERSHELL, "-NoProfile", "-NonInteractive", "-Command", _URL_SCRIPT % window["hwnd"]],
             capture_output=True, text=True, timeout=5, creationflags=_NO_WINDOW,
         )
     except (OSError, subprocess.SubprocessError):
@@ -127,13 +132,16 @@ def page_url(window):
 
 def as_url(text):
     """What an address bar shows, as a URL to open: browsers hide the scheme."""
-    if not text or " " in text or len(text) > 4096:
+    if not text or len(text) > 4096 or any(c.isspace() or ord(c) < 0x20 for c in text):
         return None
-    if text.startswith(("http://", "https://")):
-        return text
-    if "://" in text or "." not in text.split("/")[0]:
+    scheme = ""
+    for prefix in ("http://", "https://"):
+        if text.startswith(prefix):
+            scheme, text = prefix, text[len(prefix):]
+    host = re.split(r"[/?#]", text, 1)[0]
+    if not _HOST.match(host):
         return None
-    return "https://" + text
+    return (scheme or "https://") + text
 
 
 def end_move():

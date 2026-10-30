@@ -90,7 +90,8 @@ def drop_folder():
         "ForEach-Object { $_.Document.Folder.Self.Path } | Select-Object -First 1"
     )
     out = subprocess.run(
-        ["powershell", "-NoProfile", "-Command", script], capture_output=True, text=True, timeout=5, creationflags=_NO_WINDOW
+        [stream_win.POWERSHELL, "-NoProfile", "-NonInteractive", "-Command", script],
+        capture_output=True, text=True, timeout=5, creationflags=_NO_WINDOW,
     )
     path = out.stdout.strip()
     return path if os.path.isdir(path) else None

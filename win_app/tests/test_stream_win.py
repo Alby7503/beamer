@@ -7,7 +7,8 @@ class StreamWinTests(unittest.TestCase):
     def test_an_address_bar_reads_as_a_url_to_open(self):
         self.assertEqual(stream_win.as_url("example.com/a?b=1"), "https://example.com/a?b=1")
         self.assertEqual(stream_win.as_url("http://intranet.local/x"), "http://intranet.local/x")
-        for text in ("", "search words here", "file:///C:/x", "localhost", "javascript:alert(1)"):
+        self.assertEqual(stream_win.as_url("https://example.com:8443/x"), "https://example.com:8443/x")
+        for text in ("", "search words here", "file:///C:/x", "localhost", "javascript:alert(1)", "user@evil.com/x", "https://a@b.com/"):
             self.assertIsNone(stream_win.as_url(text), text)
 
     def test_only_the_title_band_counts_as_dragging_the_window(self):
