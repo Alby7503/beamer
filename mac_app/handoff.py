@@ -21,6 +21,7 @@ except ImportError:  # pragma: no cover - only off a Mac
 TITLE_BAND_PT = 52
 OSASCRIPT_TIMEOUT_SECONDS = 3.0
 AX_TIMEOUT_SECONDS = 0.2
+SIZE_SLOP_PT = 4
 # Browsers whose front tab's address AppleScript can read, by bundle identifier.
 SAFARI_LIKE = {"com.apple.Safari", "com.apple.SafariTechnologyPreview"}
 CHROME_LIKE = {
@@ -141,13 +142,23 @@ def move_on_screen(window, bounds) -> None:
 
 
 def window_number(window):
-    """The window server's number for the window, for capturing it: the app's frontmost ordinary
-    window, which is the one just dragged. Not matched by its frame: ending the drag and putting
-    it back on screen move it, and a frame that no longer matched left every stream without one."""
+    """The window server's number for the window, for capturing it: of the app's on-screen windows
+    of the dragged one's size, the nearest to where it is now, or None. Size, not place, picks it:
+    ending the drag and putting the window back on screen move it, which left a match by frame
+    with none at all."""
+    frame = window.get("window") is not None and _frame(window["window"]) or window["frame"]
+    x, y, w, h = frame
     infos = Quartz.CGWindowListCopyWindowInfo(
         Quartz.kCGWindowListOptionOnScreenOnly | Quartz.kCGWindowListExcludeDesktopElements, Quartz.kCGNullWindowID
     ) or ()
+    best = None
     for info in infos:
-        if int(info.get("kCGWindowOwnerPID", -1)) == window["pid"] and info.get("kCGWindowLayer") == 0:
-            return int(info["kCGWindowNumber"])
-    return None
+        b = info.get("kCGWindowBounds") or {}
+        if int(info.get("kCGWindowOwnerPID", -1)) != window["pid"] or info.get("kCGWindowLayer") != 0:
+            continue
+        if abs(b.get("Width", 0) - w) > SIZE_SLOP_PT or abs(b.get("Height", 0) - h) > SIZE_SLOP_PT:
+            continue
+        distance = abs(b.get("X", 0) - x) + abs(b.get("Y", 0) - y)
+        if best is None or distance < best[0]:
+            best = (distance, int(info["kCGWindowNumber"]))
+    return best[1] if best else None
