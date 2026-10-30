@@ -73,6 +73,16 @@ def in_title_band(rect, x, y) -> bool:
     return left <= x < left + width and top <= y < top + TITLE_BAND_PX
 
 
+# Why the last dragged_window() answered None, for the log line a drag stopped at the edge writes.
+last_refusal = ""
+
+
+def _refuse(why):
+    global last_refusal
+    last_refusal = why
+    return None
+
+
 def dragged_window():
     """The foreground window when the pointer is in its title band, which is what a window being
     dragged looks like, as a dict; None otherwise. On the hook thread, so only cheap calls."""
@@ -80,25 +90,25 @@ def dragged_window():
         user32 = _user32()
         hwnd = user32.GetForegroundWindow()
         if not hwnd:
-            return None
+            return _refuse("no foreground window")
         pid = ctypes.wintypes.DWORD()
         user32.GetWindowThreadProcessId(ctypes.wintypes.HWND(hwnd), ctypes.byref(pid))
         if pid.value == os.getpid():
-            return None
+            return _refuse("the foreground window is Beamer's")
         name = ctypes.create_unicode_buffer(256)
         user32.GetClassNameW(ctypes.wintypes.HWND(hwnd), name, 256)
         if name.value in _SHELL_CLASSES:
-            return None
+            return _refuse(f"the foreground window is the shell's ({name.value})")
         rect = _rect(hwnd)
         point = ctypes.wintypes.POINT()
         user32.GetCursorPos(ctypes.byref(point))
         if rect is None or not in_title_band(rect, point.x, point.y):
-            return None
+            return _refuse(f"pointer {point.x},{point.y} is not in the title band of {name.value} at {rect}")
         title = ctypes.create_unicode_buffer(512)
         user32.GetWindowTextW(ctypes.wintypes.HWND(hwnd), title, 512)
         return {"hwnd": int(hwnd), "pid": int(pid.value), "title": title.value or "Window", "rect": rect}
-    except Exception:
-        return None
+    except Exception as exc:
+        return _refuse(f"reading the window failed: {exc!r}")
 
 
 def _exe_name(pid):

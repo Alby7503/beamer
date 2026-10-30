@@ -229,6 +229,8 @@ class MacSender:
         # of the drag under way, or None. `on_left_button(down)` tells it, from the hook thread,
         # when to put itself along the edge.
         self.files_endpoint = None
+        self._left_presses = 0
+        self._noted_press = None
         self.dragged_files: Callable[[], Optional[list]] = lambda: None
         # A window dragged by its title bar against the edge crosses too: `dragged_window()` is
         # the app's reading of it (or None), and `on_carry_window(window)` carries it once the
@@ -421,6 +423,8 @@ class MacSender:
             name, down = button
             if down:
                 self._buttons_held.add(name)
+                if name == "left":
+                    self._left_presses += 1
             else:
                 self._buttons_held.discard(name)
             if name == "left" and self.on_left_button is not None:
@@ -495,6 +499,7 @@ class MacSender:
             files = self.dragged_files()
             window = None if files else self.dragged_window()
         if not files and not window and self._buttons_held and self._setting("block_while_dragging", True) and self._still_dragging():
+            self._note_held_drag()
             # A drag that reaches the edge is dragging, not leaving: the push so far is dropped,
             # as the Mac drops it, so letting go at the edge does not finish a crossing.
             for candidate in (self._corner_model, self._edge_model):
@@ -544,6 +549,19 @@ class MacSender:
                     self._send_files(files)
                 elif window and self.on_carry_window is not None:
                     self.on_carry_window(window)
+
+    def _note_held_drag(self) -> None:
+        """Logs, once per press, why a drag that reached the edge did not cross: what to read when
+        files or a window will not go across."""
+        if self._noted_press == self._left_presses or "left" not in self._buttons_held:
+            return
+        self._noted_press = self._left_presses
+        if self.files_endpoint is None:
+            LOGGER.info("a drag stopped at the edge: the Mac has not said it takes files or windows")
+            return
+        import stream_win
+
+        LOGGER.info("a drag stopped at the edge: no files over the catcher, and no window (%s)", stream_win.last_refusal)
 
     def _send_files(self, paths) -> None:
         """Sends files that crossed with the pointer, ending their drag here first: Escape cancels
