@@ -41,7 +41,7 @@ EVENT_SYSTEM_MOVESIZEEND = 0x000B
 WINEVENT_OUTOFCONTEXT = 0
 OBJID_WINDOW = 0
 WM_NCHITTEST = 0x0084
-HT_SIZING = range(10, 18)  # HTLEFT .. HTBOTTOMRIGHT
+HTCAPTION = 2
 SMTO_ABORTIFHUNG = 2
 HIT_TEST_TIMEOUT_MS = 50
 BROWSERS = {"msedge", "chrome", "brave", "firefox", "vivaldi", "opera"}
@@ -89,8 +89,15 @@ def _refuse(why):
 
 
 def is_move(hit) -> bool:
-    """Whether a WM_NCHITTEST answer, or None for none, starts a move rather than a resize."""
-    return hit not in HT_SIZING
+    """Whether a WM_NCHITTEST answer, or None for none, says the move began on the title bar.
+    Anything else, a sizing border, the client area or no answer at all, is no window drag."""
+    return hit == HTCAPTION
+
+
+def forget_move() -> None:
+    """Drops the window being moved: called wherever a gesture starts or ends, so one never
+    outlives the drag it belonged to."""
+    _moving["hwnd"] = None
 
 
 def on_move_event(event, hwnd, hit) -> None:
@@ -99,7 +106,7 @@ def on_move_event(event, hwnd, hit) -> None:
     if event == EVENT_SYSTEM_MOVESIZESTART:
         _moving["hwnd"] = int(hwnd) if is_move(hit) else None
         if not is_move(hit):
-            _refuse("the window under the pointer is being resized, not moved")
+            _refuse(f"the moved window did not say the drag began on its title bar (hit test {hit})")
     elif event == EVENT_SYSTEM_MOVESIZEEND and _moving["hwnd"] == int(hwnd or 0):
         _moving["hwnd"] = None
 

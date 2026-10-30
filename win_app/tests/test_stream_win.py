@@ -21,9 +21,11 @@ class StreamWinTests(unittest.TestCase):
         self.assertIsNone(stream_win._moving["hwnd"])
         stream_win.on_move_event(start, 42, 11)  # HTRIGHT: a resize
         self.assertIsNone(stream_win._moving["hwnd"])
-        stream_win.on_move_event(start, 42, None)  # no answer: taken as a move
-        self.assertEqual(stream_win._moving["hwnd"], 42)
-        stream_win.on_move_event(end, 42, None)
+        stream_win.on_move_event(start, 42, None)  # no answer: no window drag
+        self.assertIsNone(stream_win._moving["hwnd"])
+        stream_win.on_move_event(start, 42, 2)
+        stream_win.forget_move()
+        self.assertIsNone(stream_win._moving["hwnd"])
 
     def test_the_macs_fractions_land_inside_the_window(self):
         streamer = stream_win.Streamer(None, {"hwnd": 1, "title": "", "rect": (100, 50, 401, 201)}, None, None)

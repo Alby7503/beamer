@@ -330,7 +330,7 @@ class Carry(QObject):
     def left_button(self, down: bool) -> None:
         if not down:
             # Every move ends with the button; a lost end event must not carry a window later.
-            stream_win._moving["hwnd"] = None
+            stream_win.forget_move()
         self._left.emit(down)
 
     def dragged_files(self):
@@ -355,6 +355,7 @@ class Carry(QObject):
         threading.Thread(target=self._carry_worker, args=(window,), name="Beamer-carry", daemon=True).start()
 
     def _carry_worker(self, window) -> None:
+        stream_win.forget_move()
         sender = self.sender
         try:
             stream_win.end_move()
@@ -373,7 +374,9 @@ class Carry(QObject):
     def carry_out(self, moment: str) -> None:
         """The receiver's hook for the Mac's pointer driving this PC: a PC window it drags home
         through the edge goes with it, as one this PC's own mouse drags does."""
-        if moment == "cross" and self.sender is not None and self.sender.files_endpoint is not None:
+        if moment == "press":
+            stream_win.forget_move()
+        elif moment == "cross" and self.sender is not None and self.sender.files_endpoint is not None:
             window = stream_win.dragged_window()
             if window:
                 self.carry_window(window)
