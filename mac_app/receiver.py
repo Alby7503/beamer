@@ -178,6 +178,7 @@ class ReceiverServer:
         open_callback: Optional[Callable[[str], None]] = None,
         ghost_callback: Optional[Callable[[Optional[dict]], None]] = None,
         stream_callback: Optional[Callable[[socket.socket, object, dict], None]] = None,
+        carry_out: Optional[Callable[[str], None]] = None,
     ) -> None:
         # One module serves both machines: this file is byte-identical in
         # win_app and mac_app, which test_receiver_parity enforces. Everything
@@ -242,6 +243,11 @@ class ReceiverServer:
         self._open_callback = open_callback
         self._ghost_callback = ghost_callback
         self._stream_callback = stream_callback
+        # `carry_out("press")` when the peer's left button goes down here, and `carry_out("cross")`
+        # when its pointer pushes home through the return edge with it still down: how what it was
+        # dragging here, files or a window, goes along. On the session thread; it must not block.
+        self._carry_out = carry_out
+        self._peer_left_down = False
         # {"event", "folder"} while files that crossed wait to learn where the button came up.
         self._drop: Optional[dict] = None
         # When the left button last came up with no files waiting: a quick release can beat the
@@ -617,11 +623,16 @@ class ReceiverServer:
                     # Never recorded or acked as an input event, like ping.
                     self._handle_carry(message_type, message.get("data"))
                     continue
-                if message_type == protocol.MSG_MOUSEUP and (message.get("data") or {}).get("button") == "left":
-                    self._dropped()
-                    if self._ghost_shown and self._ghost_callback is not None:
-                        self._ghost_shown = False
-                        self._handle_carry_end()
+                if message_type in (protocol.MSG_MOUSEDOWN, protocol.MSG_MOUSEUP) and (message.get("data") or {}).get("button") == "left":
+                    self._peer_left_down = message_type == protocol.MSG_MOUSEDOWN
+                    if self._peer_left_down:
+                        self.pressed()
+                        self._carry("press")
+                    else:
+                        self.dropped()
+                        if self._ghost_shown and self._ghost_callback is not None:
+                            self._ghost_shown = False
+                            self._handle_carry_end()
                 if self._unlocking.is_set():
                     # Dropped, not queued: see _begin_unlock. Still recorded so
                     # the ACK sequence stays continuous and the Mac's watchdog
@@ -676,7 +687,7 @@ class ReceiverServer:
                 self._drop = drop
                 already_up = time.monotonic() - self._left_up_at < EARLY_DROP_SECONDS
             if already_up:
-                self._dropped()
+                self.dropped()
         connection.settimeout(FILES_READ_TIMEOUT_SECONDS)
         try:
             if not self._send_message(connection, session, protocol.welcome_msg(files=True)):
@@ -706,9 +717,23 @@ class ReceiverServer:
         except Exception:
             LOGGER.exception("A carried window's outline could not be hidden")
 
-    def _dropped(self) -> None:
-        """The button came up here: files that crossed with it learn the folder it came up over,
-        asked off the session thread because finding it can take a moment."""
+    def _carry(self, moment: str) -> None:
+        if self._carry_out is None:
+            return
+        try:
+            self._carry_out(moment)
+        except Exception:
+            LOGGER.exception("What was being dragged could not be carried across")
+
+    def pressed(self) -> None:
+        """The left button went down on this machine: a release before it names no drop."""
+        with self._lock:
+            self._left_up_at = float("-inf")
+
+    def dropped(self) -> None:
+        """The left button came up on this machine, the peer's or this machine's own: files that
+        crossed with it learn the folder it came up over, asked off the caller's thread because
+        finding it can take a moment."""
         with self._lock:
             drop, self._drop = self._drop, None
             if drop is None:
@@ -924,6 +949,8 @@ class ReceiverServer:
                 desktop.set_cursor_position(*outcome.position)
             elif outcome.action == crossing.CROSS:
                 LOGGER.info("Pointer pushed through the %s edge; returning input to the %s", model.edge, self._peer_name)
+                if self._peer_left_down:
+                    self._carry("cross")
                 self._send_message(connection, session, protocol.switch_msg(self._peer_target, outcome.edge, self.offset_out(outcome.offset)))
         except Exception:
             # Logged once, not at 100Hz: the return edge is dropped until the

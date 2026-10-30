@@ -66,6 +66,8 @@ class WindowsInput:
             files_folder=file_drag.FOLDER,
             files_callback=file_drag.show,
             drop_target=file_drag.drop_folder,
+            # The PC's pointer dragging files or a window here back home takes them along.
+            carry_out=controller.carry_out,
         )
         controller.send_peer_home = self.server.send_home
         # Pause crossing and the full-screen hold are about this screen: the PC's pointer does not

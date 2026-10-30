@@ -585,6 +585,8 @@ class KVMController:
         self.stream_ok = False
         self._drag_window = None
         self._window_checked = False
+        # The drag pasteboard's count when the PC's left button last went down here; see carry_out.
+        self._peer_press_count = None
         self.notch_range = None
         self.on_crossing = None
         self._crossing_failed = False
@@ -1219,13 +1221,35 @@ class KVMController:
                 self._drag_window = self.dragged_window(x, y)
         return self._drag_window
 
-    def _send_files(self, paths):
+    def carry_out(self, moment):
+        """The receiver's hook for the PC's own pointer driving this Mac: "press" when its left
+        button goes down here, "cross" when it pushes home through the edge still holding it.
+        Whatever it was dragging here, files or a window, goes to the PC with it. No outline
+        follows it there: the button comes up on the PC's own mouse, which this Mac never hears."""
+        if self.files_endpoint is None:
+            return
+        if moment == "press":
+            self._peer_press_count = self.file_drag.change_count()
+            return
+        pressed, self._peer_press_count = self._peer_press_count, None
+        if pressed is not None and self.file_drag.change_count() != pressed:
+            paths = self.file_drag.file_paths()
+            if paths:
+                self._send_files(paths, ghost=False)
+                return
+        x, y = desktop_mac.cursor_position()
+        window = self.dragged_window(x, y)
+        if window:
+            self._carry_window(window, ghost=False)
+
+    def _send_files(self, paths, ghost=True):
         """Starts sending `paths` to the PC, and ends the drag here first: Escape cancels it, so
         the button coming up later on the PC's side drops nothing on this Mac."""
         self._press_drag_count = None
         self._drag_files = None
         name = os.path.basename(paths[0]) if len(paths) == 1 else f"{len(paths)} items"
-        self._enqueue_control({"type": protocol.MSG_GHOST, "data": {"title": name, "w": 200, "h": 120}})
+        if ghost:
+            self._enqueue_control({"type": protocol.MSG_GHOST, "data": {"title": name, "w": 200, "h": 120}})
         endpoint = self.files_endpoint
         threading.Thread(target=self._files_worker, args=(endpoint, list(paths)), name="Beamer-files", daemon=True).start()
 
@@ -1245,13 +1269,14 @@ class KVMController:
             self.logger.warning("sending files to Windows failed: %s", exc)
             self._alert("Beamer", f"The files did not reach Windows: {exc}")
 
-    def _carry_window(self, window):
+    def _carry_window(self, window, ghost=True):
         """A window dragged across: its outline follows the pointer on the PC, and once its own
         drag here is ended it goes as its page, its document, or live."""
         self._press_drag_count = None
         self._drag_window = None
         _x, _y, w, h = window["frame"]
-        self._enqueue_control({"type": protocol.MSG_GHOST, "data": {"title": window["title"], "w": int(w), "h": int(h)}})
+        if ghost:
+            self._enqueue_control({"type": protocol.MSG_GHOST, "data": {"title": window["title"], "w": int(w), "h": int(h)}})
         threading.Thread(target=self._carry_worker, args=(self.files_endpoint, window), name="Beamer-carry", daemon=True).start()
 
     def _carry_worker(self, endpoint, window):

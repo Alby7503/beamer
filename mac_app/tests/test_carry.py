@@ -49,7 +49,7 @@ class CarryTests(unittest.TestCase):
             server, endpoint = self._server(
                 files_folder=landing, files_callback=lambda paths, then: shown.append((paths, then)), drop_target=lambda: target
             )
-            server._dropped()  # the button came up just before the files' connection did
+            server.dropped()  # the button came up just before the files' connection did
             file_transfer.deliver(socket.create_connection, endpoint, [os.path.join(src, "note.txt")])
             deadline = time.monotonic() + 3
             while not shown and time.monotonic() < deadline:

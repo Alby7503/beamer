@@ -330,7 +330,7 @@ class Carry(QObject):
     def _on_left(self, down: bool) -> None:
         sender = self.sender
         edge = sender.edge if sender is not None else None
-        if down and edge and sender.files_endpoint is not None:
+        if down and edge and sender.files_endpoint is not None and not sender.redirecting:
             self.catcher.files = None
             self.catcher.setGeometry(_edge_strip(edge))
             self.catcher.show()

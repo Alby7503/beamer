@@ -1911,6 +1911,16 @@ class CrossingWiringTests(unittest.TestCase):
         self.assertFalse(self.controller.redirecting)
         self.assertEqual(sent, [])
 
+    def test_files_the_pcs_pointer_drags_home_go_with_it_without_an_outline(self):
+        counts = iter([1, 2])
+        self.controller.file_drag = types.SimpleNamespace(change_count=lambda: next(counts), file_paths=lambda: ["/tmp/a.txt"])
+        self.controller.files_endpoint = ("pc", 24820, "token")
+        sent = []
+        self.controller._send_files = lambda paths, ghost=True: sent.append((paths, ghost))
+        self.controller.carry_out("press")
+        self.controller.carry_out("cross")
+        self.assertEqual(sent, [(["/tmp/a.txt"], False)])
+
     def test_a_window_dragged_by_its_title_crosses_and_is_carried(self):
         self._file_drag(count_after_press=1)
         carried = []

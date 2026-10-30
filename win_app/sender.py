@@ -417,8 +417,7 @@ class MacSender:
                 self._buttons_held.add(name)
             else:
                 self._buttons_held.discard(name)
-            # Up always, so the catcher comes down after a drag that crossed with the button.
-            if name == "left" and self.on_left_button is not None and (not down or not self.redirecting):
+            if name == "left" and self.on_left_button is not None:
                 try:
                     self.on_left_button(down)
                 except Exception:

@@ -286,7 +286,7 @@ class WindowsApplication(QWidget):
         self.sender.send_peer_home = self.server.send_home
         self.carry.sender = self.sender
         self.sender.dragged_files = self.carry.dragged_files
-        self.sender.on_left_button = self.carry.left_button
+        self.sender.on_left_button = self._on_left_button
         # Pause crossing and the full-screen hold are about this screen: the Mac's pointer does
         # not go home through a held edge either.
         self.server.edges_held = lambda: self.sender.edges_held
@@ -2314,6 +2314,15 @@ class WindowsApplication(QWidget):
             self._status = state
             self._status_detail = detail
         self.bridge.changed.emit(state, detail)
+
+    def _on_left_button(self, down: bool) -> None:
+        """This PC's own left button, from the hook thread. Its release is also where files the
+        Mac's side carried across with this mouse were dropped."""
+        self.carry.left_button(down)
+        if down:
+            self.server.pressed()
+        else:
+            self.server.dropped()
 
     def _on_status(self, state, _detail: str) -> None:
         if self._closing:

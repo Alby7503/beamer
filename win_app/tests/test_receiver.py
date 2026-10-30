@@ -849,6 +849,25 @@ class ReceiverCrossingTests(unittest.TestCase):
             finally:
                 self._teardown(client, connection, stop_event, thread)
 
+    def test_a_drag_pushed_home_through_the_edge_is_carried(self):
+        desktop = FakeDesktop(self.MONITORS, cursor=(-1920, 300))
+        moments = []
+        with mock.patch.object(receiver, "ACK_IDLE_SECONDS", 1000.0), mock.patch.object(
+            input_injector, "inject_mouse_move"
+        ), mock.patch.object(input_injector, "inject_mouse_button"):
+            server, client, connection, stop_event, thread = self._session(desktop, [])
+            server._carry_out = moments.append
+            try:
+                client.send(self._focus_windows(return_edge="left", resistance_px=100))
+                client.send({"type": protocol.MSG_MOUSEDOWN, "data": {"button": "left"}})
+                for _ in range(4):
+                    client.send({"type": protocol.MSG_MOUSEMOVE, "data": {"dx": -60, "dy": 0}})
+                client.settimeout(1.0)
+                self.assertEqual(client.recv()["type"], protocol.MSG_SWITCH)
+                self.assertEqual(moments, ["press", "cross"])
+            finally:
+                self._teardown(client, connection, stop_event, thread)
+
     def test_a_crossing_setting_changed_mid_visit_applies_at_once(self):
         # Toby, 28-09-2026: a change to Part of the edge applied only after crossing out and back.
         desktop = FakeDesktop(self.MONITORS, cursor=(-1920, 1100))
