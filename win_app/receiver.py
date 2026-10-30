@@ -1059,6 +1059,8 @@ class ReceiverServer:
         injected for the peer and never released -- a chord in flight when
         input went home or the link died -- would otherwise stay down on this
         machine, turning every later local keystroke into a shortcut."""
+        # Released here too, so a press whose release never arrived carries nothing later.
+        self._peer_left_down = False
         injector = self._injector
         if injector is None:
             try:
