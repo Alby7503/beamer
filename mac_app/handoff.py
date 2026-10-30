@@ -58,6 +58,10 @@ def dragged_window(x, y):
         if app is None:
             return None
         pid = int(app.processIdentifier())
+        if pid == os.getpid():
+            # Beamer's own windows stay: AppKit only lets its main thread move them, and this runs
+            # on the event tap's (a drag of the Beamer window once crashed it that way).
+            return None
         element = AX.AXUIElementCreateApplication(pid)
         # This runs on the event tap's thread: an app that does not answer must not stall input.
         AX.AXUIElementSetMessagingTimeout(element, AX_TIMEOUT_SECONDS)
