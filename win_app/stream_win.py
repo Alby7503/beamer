@@ -69,8 +69,11 @@ def _rect(hwnd):
 
 
 def in_title_band(rect, x, y) -> bool:
+    """Whether (x, y) is on the window's title bar. The sides allow a band's width beyond the
+    window: Windows stops a dragged window at the screen's edge while the pointer goes on, and the
+    first PC test had it 17 px past the window when it reached the edge."""
     left, top, width, _height = rect
-    return left <= x < left + width and top <= y < top + TITLE_BAND_PX
+    return left - TITLE_BAND_PX <= x < left + width + TITLE_BAND_PX and top <= y < top + TITLE_BAND_PX
 
 
 # Why the last dragged_window() answered None, for the log line a drag stopped at the edge writes.

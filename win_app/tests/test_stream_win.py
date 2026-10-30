@@ -15,7 +15,8 @@ class StreamWinTests(unittest.TestCase):
         rect = (100, 50, 800, 600)
         self.assertTrue(stream_win.in_title_band(rect, 400, 60))
         self.assertFalse(stream_win.in_title_band(rect, 400, 50 + stream_win.TITLE_BAND_PX))
-        self.assertFalse(stream_win.in_title_band(rect, 950, 60))
+        self.assertTrue(stream_win.in_title_band((1469, 551, 1047, 684), 2533, 610), "the PC test's own reading")
+        self.assertFalse(stream_win.in_title_band(rect, 100 + 800 + stream_win.TITLE_BAND_PX, 60))
 
     def test_the_macs_fractions_land_inside_the_window(self):
         streamer = stream_win.Streamer(None, {"hwnd": 1, "title": "", "rect": (100, 50, 401, 201)}, None, None)
