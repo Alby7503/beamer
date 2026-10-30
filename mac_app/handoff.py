@@ -141,14 +141,13 @@ def move_on_screen(window, bounds) -> None:
 
 
 def window_number(window):
-    """The window server's number for the window, for capturing it: the on-screen window of the
-    same app with the same frame."""
-    x, y, w, h = window["frame"]
-    infos = Quartz.CGWindowListCopyWindowInfo(Quartz.kCGWindowListOptionOnScreenOnly, Quartz.kCGNullWindowID) or ()
+    """The window server's number for the window, for capturing it: the app's frontmost ordinary
+    window, which is the one just dragged. Not matched by its frame: ending the drag and putting
+    it back on screen move it, and a frame that no longer matched left every stream without one."""
+    infos = Quartz.CGWindowListCopyWindowInfo(
+        Quartz.kCGWindowListOptionOnScreenOnly | Quartz.kCGWindowListExcludeDesktopElements, Quartz.kCGNullWindowID
+    ) or ()
     for info in infos:
-        if int(info.get("kCGWindowOwnerPID", -1)) != window["pid"] or info.get("kCGWindowLayer") != 0:
-            continue
-        b = info.get("kCGWindowBounds") or {}
-        if abs(b.get("X", 0) - x) < 2 and abs(b.get("Y", 0) - y) < 2 and abs(b.get("Width", 0) - w) < 2:
+        if int(info.get("kCGWindowOwnerPID", -1)) == window["pid"] and info.get("kCGWindowLayer") == 0:
             return int(info["kCGWindowNumber"])
     return None
